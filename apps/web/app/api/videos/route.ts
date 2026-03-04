@@ -79,6 +79,7 @@ export async function POST(req: NextRequest) {
       propertyType,
       tone,
       imageKeys,
+      autoSort,
       addMusic,
     });
 

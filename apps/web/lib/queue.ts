@@ -17,6 +17,7 @@ export interface VideoJob {
   propertyType: string;
   tone: string;
   imageKeys: string[];
+  autoSort: boolean;
   addMusic: boolean;
 }
 

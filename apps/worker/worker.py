@@ -39,6 +39,7 @@ class ProcessRequest(BaseModel):
     propertyType: str = "Single Family"
     tone: str = "Warm & Inviting"
     imageKeys: list[str]
+    autoSort: bool = True
     addMusic: bool = True
 
 
@@ -77,7 +78,7 @@ async def process_video(
             receiver.verify(
                 signature=qstash_sig,
                 body=body_bytes.decode(),
-                url=f"{settings.next_app_url}/process",
+                url=str(request.url),
             )
         except Exception as e:
             logger.warning(f"QStash signature verification failed: {e}")

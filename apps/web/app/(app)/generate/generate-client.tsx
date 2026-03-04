@@ -314,7 +314,7 @@ export function GenerateClient() {
 
         {step === "generating" && (
           <p className="text-center text-sm text-charcoal-600 bg-cream-100 rounded-lg p-3">
-            You can safely close this tab — you'll receive an email when your video is ready.
+            You can safely close this tab — you&apos;ll receive an email when your video is ready.
           </p>
         )}
 
@@ -355,7 +355,7 @@ export function GenerateClient() {
           Create a listing video
         </h1>
         <p className="text-charcoal-600">
-          Upload your photos, enter the address, and we'll generate a professional video in minutes.
+          Upload your photos, enter the address, and we&apos;ll generate a professional video in minutes.
         </p>
       </div>
 

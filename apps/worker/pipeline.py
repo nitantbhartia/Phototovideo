@@ -66,6 +66,7 @@ class VideoJob:
         self.property_type = data.get("propertyType", "Single Family")
         self.tone = data.get("tone", "Warm & Inviting")
         self.image_keys = data["imageKeys"]
+        self.auto_sort = data.get("autoSort", True)
         self.add_music = data.get("addMusic", True)
 
 
@@ -150,12 +151,14 @@ def classify_and_sort_images(
     image_paths: list[str],
     address: str,
     property_type: str,
+    auto_sort: bool = True,
 ) -> list[dict]:
     """
     Use Claude Vision to classify each image by room type.
     Returns ordered list: [{path, room_label, order_index}]
     """
-    logger.info(f"Classifying {len(image_paths)} images...")
+    action = "classifying and sorting" if auto_sort else "classifying"
+    logger.info(f"{action.capitalize()} {len(image_paths)} images...")
 
     content = []
 
@@ -178,6 +181,14 @@ def classify_and_sort_images(
         })
         os.unlink(jpeg_path)
 
+    sort_instruction = (
+        "Sort the results so they appear in optimal video order: exterior first, then "
+        "interior rooms (living → dining → kitchen → bedrooms → bathrooms), then "
+        "outdoor/backyard last."
+        if auto_sort
+        else "Keep the results in the exact same order as the input images."
+    )
+
     content.append({
         "type": "text",
         "text": f"""You are analyzing {len(image_paths)} photos from a real estate listing at {address} ({property_type}).
@@ -188,7 +199,7 @@ Use one of these labels: exterior, entryway, foyer, living room, family room, di
 Return a JSON array with exactly {len(image_paths)} objects in this format:
 [{{"image_index": 1, "room_label": "exterior", "confidence": 0.95}}, ...]
 
-Sort the results so they appear in optimal video order: exterior first, then interior rooms (living → dining → kitchen → bedrooms → bathrooms), then outdoor/backyard last.
+{sort_instruction}
 Return ONLY the JSON array, no other text.""",
     })
 
@@ -213,7 +224,10 @@ Return ONLY the JSON array, no other text.""",
                 return i
         return len(ROOM_ORDER)
 
-    classifications.sort(key=room_sort_key)
+    if auto_sort:
+        classifications.sort(key=room_sort_key)
+    else:
+        classifications.sort(key=lambda item: item["image_index"])
 
     # Map back to file paths
     result = []
@@ -501,9 +515,66 @@ def assemble_final_video(
     """
     logger.info("Assembling final video...")
 
+    # Add subtitles for every final output, including single-image jobs.
+    srt_path = os.path.join(work_dir, "subtitles.srt")
+    create_srt_file(clips, srt_path)
+
+    subtitle_filter = (
+        f"subtitles={srt_path}:force_style="
+        "'FontName=Arial,FontSize=20,PrimaryColour=&Hffffff,OutlineColour=&H000000,"
+        "BorderStyle=3,Outline=2,Shadow=1,MarginV=40,Alignment=2'"
+    )
+
+    watermark_filter = (
+        "drawtext=text='ListingReel Preview':fontcolor=white@0.4:"
+        "fontsize=24:x=w-tw-20:y=h-th-20:font=Arial"
+    )
+
+    music_file = os.path.join(os.path.dirname(__file__), "assets", "background.mp3")
+    has_music_file = add_music and os.path.exists(music_file)
+
     if len(clips) == 1:
-        # Single clip — just copy with watermark if needed
-        shutil.copy(clips[0]["clip_path"], output_path)
+        filter_parts = [f"[0:v]{subtitle_filter}[vsub]"]
+        final_v = "vsub"
+        final_a = "0:a"
+
+        if watermark:
+            filter_parts.append(f"[{final_v}]{watermark_filter}[vfinal]")
+            final_v = "vfinal"
+
+        inputs = ["-i", clips[0]["clip_path"]]
+        if has_music_file:
+            inputs.extend(["-i", music_file])
+            filter_parts.append(
+                f"[1:a]volume={settings.background_music_volume}[music]"
+            )
+            filter_parts.append(
+                f"[0:a][music]amix=inputs=2:duration=first[afinal]"
+            )
+            final_a = "[afinal]"
+
+        cmd = (
+            ["ffmpeg", "-y"]
+            + inputs
+            + [
+                "-filter_complex", ";".join(filter_parts),
+                "-map", f"[{final_v}]",
+                "-map", final_a,
+                "-c:v", "libx264",
+                "-preset", "medium",
+                "-crf", str(settings.video_crf),
+                "-pix_fmt", "yuv420p",
+                "-c:a", "aac",
+                "-b:a", "192k",
+                "-ar", "44100",
+                "-movflags", "+faststart",
+                output_path,
+            ]
+        )
+
+        result = subprocess.run(cmd, capture_output=True, text=True)
+        if result.returncode != 0:
+            raise RuntimeError(f"ffmpeg assembly failed: {result.stderr[-1000:]}")
         return
 
     # Build xfade filter chain
@@ -555,36 +626,20 @@ def assemble_final_video(
         final_v = "vout"
         final_a = "aout"
 
-    # Add subtitles
-    srt_path = os.path.join(work_dir, "subtitles.srt")
-    create_srt_file(clips, srt_path)
-
-    # Subtitle filter
-    subtitle_filter = (
-        f"subtitles={srt_path}:force_style="
-        "'FontName=Arial,FontSize=20,PrimaryColour=&Hffffff,OutlineColour=&H000000,"
-        "BorderStyle=3,Outline=2,Shadow=1,MarginV=40,Alignment=2'"
-    )
-    filter_parts.append(f"[{final_v}]{subtitle_filter}[vfinal]")
+    filter_parts.append(f"[{final_v}]{subtitle_filter}[vsub]")
+    final_v = "vsub"
 
     # Watermark filter
     if watermark:
-        watermark_filter = (
-            "drawtext=text='ListingReel Preview':fontcolor=white@0.4:"
-            "fontsize=24:x=w-tw-20:y=h-th-20:font=Arial"
-        )
-        filter_parts[-1] = filter_parts[-1].replace(
-            "[vfinal]", f"{watermark_filter}[vfinal]"
-        )
+        filter_parts.append(f"[{final_v}]{watermark_filter}[vfinal]")
+        final_v = "vfinal"
 
     filter_complex = ";".join(filter_parts)
 
     # Music mix
     if add_music:
-        # Use a silent audio track as placeholder — in production use actual music file
-        music_file = os.path.join(os.path.dirname(__file__), "assets", "background.mp3")
         music_args = []
-        if os.path.exists(music_file):
+        if has_music_file:
             music_args = ["-i", music_file]
             music_idx = n
             filter_complex += (
@@ -598,7 +653,7 @@ def assemble_final_video(
             + music_args
             + [
                 "-filter_complex", filter_complex,
-                "-map", "[vfinal]",
+                "-map", f"[{final_v}]",
                 "-map", f"[{final_a}]",
                 "-c:v", "libx264",
                 "-preset", "medium",
@@ -617,7 +672,7 @@ def assemble_final_video(
             + inputs
             + [
                 "-filter_complex", filter_complex,
-                "-map", "[vfinal]",
+                "-map", f"[{final_v}]",
                 "-map", f"[{final_a}]",
                 "-c:v", "libx264",
                 "-preset", "medium",
@@ -661,7 +716,10 @@ def run_pipeline(job: VideoJob) -> PipelineResult:
         r2 = get_r2_client()
 
         # ── Stage 1: Download images
-        report_status(job.video_id, "processing", "Classifying & sorting rooms")
+        stage_message = (
+            "Classifying & sorting rooms" if job.auto_sort else "Classifying rooms"
+        )
+        report_status(job.video_id, "processing", stage_message)
         logger.info(f"Downloading {len(job.image_keys)} images...")
 
         image_paths = []
@@ -676,7 +734,7 @@ def run_pipeline(job: VideoJob) -> PipelineResult:
 
         # ── Stage 1: Classify and sort
         clips = classify_and_sort_images(
-            anthropic, image_paths, job.address, job.property_type
+            anthropic, image_paths, job.address, job.property_type, job.auto_sort
         )
 
         # ── Stage 2: Generate narrations
