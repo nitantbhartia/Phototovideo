@@ -1,14 +1,38 @@
-[build]
+# ListingReel — Railway deployment config
+# Two services: web (Next.js) + worker (Python/ffmpeg)
+# Deploy via: railway up
+
+[project]
+name = "listingreel"
+
+# ── Web service (Next.js) ────────────────────────────────────────────────────
+[[services]]
+name = "web"
+
+[services.build]
+builder = "dockerfile"
+dockerfilePath = "apps/web/Dockerfile"
+buildContext = "apps/web"
+
+[services.deploy]
+startCommand = "node server.js"
+healthcheckPath = "/"
+healthcheckTimeout = 60
+restartPolicyType = "on_failure"
+restartPolicyMaxRetries = 3
+
+# ── Worker service (Python + ffmpeg) ────────────────────────────────────────
+[[services]]
+name = "worker"
+
+[services.build]
 builder = "dockerfile"
 dockerfilePath = "apps/worker/Dockerfile"
 buildContext = "apps/worker"
 
-[deploy]
+[services.deploy]
 startCommand = "python worker.py"
 healthcheckPath = "/health"
 healthcheckTimeout = 300
 restartPolicyType = "on_failure"
 restartPolicyMaxRetries = 3
-
-[[services]]
-name = "listingreel-worker"
