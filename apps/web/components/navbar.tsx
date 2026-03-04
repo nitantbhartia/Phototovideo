@@ -1,14 +1,19 @@
 "use client";
 
 import Link from "next/link";
+import dynamic from "next/dynamic";
 import { usePathname } from "next/navigation";
-import { SignInButton, SignUpButton, UserButton, useUser } from "@clerk/nextjs";
 import { Button } from "@/components/ui/button";
 import { Film } from "lucide-react";
 
-const hasClerkPublishableKey = !!process.env.NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY;
+const hasClerkPublishableKey =
+  !!process.env.NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY && process.env.GUEST_MODE !== "true";
+const ClerkNavbar = dynamic(
+  () => import("./clerk-navbar").then((module) => module.ClerkNavbar),
+  { ssr: false }
+);
 
-function NavbarShell({
+export function NavbarShell({
   isSignedIn,
   authControls,
 }: {
@@ -62,38 +67,6 @@ function NavbarShell({
         </div>
       </div>
     </header>
-  );
-}
-
-function ClerkNavbar() {
-  const { isSignedIn } = useUser();
-  const signedIn = !!isSignedIn;
-
-  return (
-    <NavbarShell
-      isSignedIn={signedIn}
-      authControls={
-        signedIn ? (
-          <>
-            <Button asChild size="sm">
-              <Link href="/generate">Create Video</Link>
-            </Button>
-            <UserButton afterSignOutUrl="/" />
-          </>
-        ) : (
-          <>
-            <SignInButton mode="modal">
-              <Button variant="ghost" size="sm">
-                Sign In
-              </Button>
-            </SignInButton>
-            <SignUpButton mode="modal">
-              <Button size="sm">Get Started</Button>
-            </SignUpButton>
-          </>
-        )
-      }
-    />
   );
 }
 

@@ -1,8 +1,7 @@
 import Link from "next/link";
-import { currentUser } from "@clerk/nextjs/server";
 import { redirect } from "next/navigation";
 import { Film, LayoutDashboard, PlusCircle, Settings } from "lucide-react";
-import { UserButton } from "@clerk/nextjs";
+import { getCurrentClerkUser } from "@/lib/auth";
 
 export default async function AppLayout({
   children,
@@ -57,8 +56,9 @@ export default async function AppLayout({
     );
   }
 
-  const user = await currentUser();
+  const user = await getCurrentClerkUser();
   if (!user) redirect("/sign-in");
+  const { UserButton } = require("@clerk/nextjs");
 
   return (
     <div className="min-h-screen flex">

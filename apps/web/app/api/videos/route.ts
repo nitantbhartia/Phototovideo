@@ -1,10 +1,10 @@
 import { NextRequest, NextResponse } from "next/server";
-import { auth } from "@clerk/nextjs/server";
 import { getDb } from "@/lib/db";
 import { videos, users, videoClips } from "@/lib/db/schema";
 import { eq, desc } from "drizzle-orm";
 import { dispatchVideoJob } from "@/lib/queue";
 import { z } from "zod";
+import { getClerkUserId, hasClerkEnv, isGuestMode } from "@/lib/auth";
 
 const CreateVideoSchema = z.object({
   videoId: z.string().uuid(),
@@ -19,10 +19,8 @@ const CreateVideoSchema = z.object({
 export async function POST(req: NextRequest) {
   try {
     const db = getDb();
-    const guestMode = process.env.GUEST_MODE === "true";
-    const hasClerkEnv =
-      !!process.env.NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY && !!process.env.CLERK_SECRET_KEY;
-    const clerkId = guestMode || !hasClerkEnv ? "guest-test-user" : auth().userId;
+    const guestMode = isGuestMode();
+    const clerkId = guestMode || !hasClerkEnv() ? "guest-test-user" : await getClerkUserId();
     if (!clerkId) {
       return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
     }
@@ -97,10 +95,8 @@ export async function POST(req: NextRequest) {
 export async function GET(req: NextRequest) {
   try {
     const db = getDb();
-    const guestMode = process.env.GUEST_MODE === "true";
-    const hasClerkEnv =
-      !!process.env.NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY && !!process.env.CLERK_SECRET_KEY;
-    const clerkId = guestMode || !hasClerkEnv ? "guest-test-user" : auth().userId;
+    const guestMode = isGuestMode();
+    const clerkId = guestMode || !hasClerkEnv() ? "guest-test-user" : await getClerkUserId();
     if (!clerkId) {
       return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
     }

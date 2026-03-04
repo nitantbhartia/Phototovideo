@@ -1,10 +1,10 @@
 import { NextRequest, NextResponse } from "next/server";
-import { auth } from "@clerk/nextjs/server";
 import { getDb } from "@/lib/db";
 import { videos, users } from "@/lib/db/schema";
 import { eq } from "drizzle-orm";
 import { generatePresignedDownloadUrl } from "@/lib/r2";
 import { getVideoStatus } from "@/lib/queue";
+import { getClerkUserId, hasClerkEnv, isGuestMode } from "@/lib/auth";
 
 interface Params {
   params: { id: string };
@@ -13,10 +13,8 @@ interface Params {
 export async function GET(req: NextRequest, { params }: Params) {
   try {
     const db = getDb();
-    const guestMode = process.env.GUEST_MODE === "true";
-    const hasClerkEnv =
-      !!process.env.NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY && !!process.env.CLERK_SECRET_KEY;
-    const clerkId = guestMode || !hasClerkEnv ? null : auth().userId;
+    const guestMode = isGuestMode();
+    const clerkId = guestMode || !hasClerkEnv() ? null : await getClerkUserId();
 
     const video = await db.query.videos.findFirst({
       where: eq(videos.id, params.id),
@@ -77,10 +75,8 @@ export async function GET(req: NextRequest, { params }: Params) {
 export async function DELETE(req: NextRequest, { params }: Params) {
   try {
     const db = getDb();
-    const guestMode = process.env.GUEST_MODE === "true";
-    const hasClerkEnv =
-      !!process.env.NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY && !!process.env.CLERK_SECRET_KEY;
-    const clerkId = guestMode || !hasClerkEnv ? "guest-test-user" : auth().userId;
+    const guestMode = isGuestMode();
+    const clerkId = guestMode || !hasClerkEnv() ? "guest-test-user" : await getClerkUserId();
     if (!clerkId) {
       return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
     }

@@ -5,10 +5,10 @@ import { eq, or } from "drizzle-orm";
 import { VideoPlayer } from "./video-player";
 import { ShareButton } from "./share-button";
 import { generatePresignedDownloadUrl } from "@/lib/r2";
-import { currentUser } from "@clerk/nextjs/server";
 import { Button } from "@/components/ui/button";
 import { Download, Film, RefreshCw } from "lucide-react";
 import Link from "next/link";
+import { getCurrentClerkUser } from "@/lib/auth";
 
 export const dynamic = "force-dynamic";
 
@@ -37,7 +37,7 @@ export default async function VideoPage({ params }: Props) {
   const video = await getVideo(params.id);
   if (!video) notFound();
 
-  const clerkUser = await currentUser();
+  const clerkUser = await getCurrentClerkUser();
   const isOwner = clerkUser && video.user.clerkId === clerkUser.id;
 
   let videoUrl: string | null = null;

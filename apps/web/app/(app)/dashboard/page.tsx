@@ -1,5 +1,4 @@
 import Link from "next/link";
-import { currentUser } from "@clerk/nextjs/server";
 import { getDb } from "@/lib/db";
 import { videos, users } from "@/lib/db/schema";
 import { eq, desc } from "drizzle-orm";
@@ -19,13 +18,17 @@ import {
 } from "lucide-react";
 import { getPublicUrl } from "@/lib/r2";
 import { formatDuration } from "@/lib/utils";
+import { getCurrentClerkUser, isGuestMode } from "@/lib/auth";
 
 export const metadata = { title: "Dashboard" };
 export const dynamic = "force-dynamic";
 
 export default async function DashboardPage() {
   const db = getDb();
-  const clerkUser = await currentUser();
+  const guestMode = isGuestMode();
+  const clerkUser = guestMode
+    ? { id: "guest-test-user", firstName: "Guest" }
+    : await getCurrentClerkUser();
   if (!clerkUser) return null;
 
   const user = await db.query.users.findFirst({

@@ -1,6 +1,5 @@
 import type { Metadata } from "next";
 import { Inter } from "next/font/google";
-import { ClerkProvider } from "@clerk/nextjs";
 import "./globals.css";
 
 const inter = Inter({
@@ -35,6 +34,7 @@ export default function RootLayout({
 }: {
   children: React.ReactNode;
 }) {
+  const guestMode = process.env.GUEST_MODE === "true";
   const publishableKey = process.env.NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY;
 
   const content = (
@@ -43,13 +43,10 @@ export default function RootLayout({
     </html>
   );
 
-  if (!publishableKey) {
+  if (guestMode || !publishableKey) {
     return content;
   }
 
-  return (
-    <ClerkProvider publishableKey={publishableKey}>
-      {content}
-    </ClerkProvider>
-  );
+  const { ClerkProvider } = require("@clerk/nextjs");
+  return <ClerkProvider publishableKey={publishableKey}>{content}</ClerkProvider>;
 }

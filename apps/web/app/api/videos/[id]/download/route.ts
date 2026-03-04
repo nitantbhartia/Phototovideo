@@ -1,9 +1,9 @@
 import { NextRequest, NextResponse } from "next/server";
-import { auth } from "@clerk/nextjs/server";
 import { getDb } from "@/lib/db";
 import { videos } from "@/lib/db/schema";
 import { eq } from "drizzle-orm";
 import { generatePresignedDownloadUrl } from "@/lib/r2";
+import { getClerkUserId } from "@/lib/auth";
 
 interface Params {
   params: { id: string };
@@ -12,7 +12,7 @@ interface Params {
 export async function GET(req: NextRequest, { params }: Params) {
   try {
     const db = getDb();
-    const { userId: clerkId } = auth();
+    const clerkId = await getClerkUserId();
     if (!clerkId) {
       return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
     }

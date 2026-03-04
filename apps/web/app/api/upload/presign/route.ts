@@ -1,5 +1,4 @@
 import { NextRequest, NextResponse } from "next/server";
-import { auth } from "@clerk/nextjs/server";
 import { generatePresignedUploadUrl, generateImageKey } from "@/lib/r2";
 import { getDb } from "@/lib/db";
 import { videos, users, videoClips } from "@/lib/db/schema";
@@ -7,6 +6,7 @@ import { eq } from "drizzle-orm";
 import { generateShareId } from "@/lib/utils";
 import { randomUUID } from "crypto";
 import { z } from "zod";
+import { getClerkUserId, hasClerkEnv, isGuestMode } from "@/lib/auth";
 
 const PresignSchema = z.object({
   files: z
@@ -24,10 +24,8 @@ const PresignSchema = z.object({
 export async function POST(req: NextRequest) {
   try {
     const db = getDb();
-    const guestMode = process.env.GUEST_MODE === "true";
-    const hasClerkEnv =
-      !!process.env.NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY && !!process.env.CLERK_SECRET_KEY;
-    const clerkId = guestMode || !hasClerkEnv ? "guest-test-user" : auth().userId;
+    const guestMode = isGuestMode();
+    const clerkId = guestMode || !hasClerkEnv() ? "guest-test-user" : await getClerkUserId();
     if (!clerkId) {
       return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
     }
