@@ -16,6 +16,7 @@ import logging
 import subprocess
 import tempfile
 import shutil
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 from typing import Optional
 
@@ -452,15 +453,14 @@ def generate_audio_elevenlabs(
     work_dir: str,
     voice_id: str = "rachel",
 ) -> list[dict]:
-    """Generate voiceover audio per clip using ElevenLabs."""
-    logger.info("Generating voiceover audio via ElevenLabs...")
+    """Generate voiceover audio per clip using ElevenLabs (parallel)."""
+    logger.info(f"Generating voiceover audio via ElevenLabs ({len(clips)} clips, {settings.max_tts_workers} workers)...")
 
     voice_preset = VOICE_PRESETS.get(voice_id, VOICE_PRESETS["rachel"])
     eleven_voice_id = voice_preset["id"]
 
-    for i, clip in enumerate(clips):
+    def _generate_one(i: int, clip: dict) -> tuple[int, str]:
         audio_path = os.path.join(work_dir, f"audio_{i:03d}.mp3")
-
         audio_bytes = eleven.generate(
             text=clip["narration"],
             voice=eleven_voice_id,
@@ -472,12 +472,16 @@ def generate_audio_elevenlabs(
                 use_speaker_boost=True,
             ),
         )
-
         with open(audio_path, "wb") as f:
             for chunk in audio_bytes:
                 f.write(chunk)
+        return i, audio_path
 
-        _set_clip_audio_timing(clip, audio_path, i)
+    with ThreadPoolExecutor(max_workers=settings.max_tts_workers) as pool:
+        futures = {pool.submit(_generate_one, i, clip): i for i, clip in enumerate(clips)}
+        for future in as_completed(futures):
+            i, audio_path = future.result()
+            _set_clip_audio_timing(clips[i], audio_path, i)
 
     return clips
 
@@ -489,20 +493,14 @@ def generate_audio_openai(
     voice_id: str = "rachel",
     tone: str = "Warm & Inviting",
 ) -> list[dict]:
-    """
-    Generate voiceover audio per clip using OpenAI GPT-4o-mini TTS.
-
-    Key advantage: instructable voice — we tell the model *how* to speak,
-    not just what to say, producing more natural real estate narration.
-    """
-    logger.info("Generating voiceover audio via OpenAI TTS...")
+    """Generate voiceover audio per clip using OpenAI TTS (parallel)."""
+    logger.info(f"Generating voiceover audio via OpenAI TTS ({len(clips)} clips, {settings.max_tts_workers} workers)...")
 
     voice = OPENAI_VOICE_MAP.get(voice_id, "coral")
     instructions = OPENAI_VOICE_INSTRUCTIONS.get(tone, OPENAI_VOICE_INSTRUCTIONS["Warm & Inviting"])
 
-    for i, clip in enumerate(clips):
+    def _generate_one(i: int, clip: dict) -> tuple[int, str]:
         audio_path = os.path.join(work_dir, f"audio_{i:03d}.mp3")
-
         response = oai.audio.speech.create(
             model=settings.openai_tts_model,
             voice=voice,
@@ -511,8 +509,13 @@ def generate_audio_openai(
             response_format="mp3",
         )
         response.stream_to_file(audio_path)
+        return i, audio_path
 
-        _set_clip_audio_timing(clip, audio_path, i)
+    with ThreadPoolExecutor(max_workers=settings.max_tts_workers) as pool:
+        futures = {pool.submit(_generate_one, i, clip): i for i, clip in enumerate(clips)}
+        for future in as_completed(futures):
+            i, audio_path = future.result()
+            _set_clip_audio_timing(clips[i], audio_path, i)
 
     return clips
 
@@ -637,42 +640,71 @@ def render_clip(
     total_frames = max(int(clip_duration * fps), 1)
     fd = max(total_frames - 1, 1)  # frame denominator for 0→1 progress
 
-    # Pre-scale to 2× output so zoompan never upscales (important for
-    # lower-res sources like Zillow ~1024 px).
-    pre_w = width * 2
-    pre_h = height * 2
+    # Adaptive prescale — only upscale as much as needed for zoompan headroom.
+    # For high-res sources (>= output), 2× gives smooth sub-pixel animation.
+    # For low-res sources (Zillow ~1024px), we limit the upscale to avoid
+    # turning a 1024px image into a blurry 3840px mess. Instead we go to
+    # 1.2× output and add sharpening to recover clarity.
+    try:
+        src_img = Image.open(image_path)
+        src_w, src_h = src_img.size
+        src_img.close()
+    except Exception:
+        src_w, src_h = width, height  # fallback
+
+    # If source is high-res (>= output), use 2× prescale for maximum quality.
+    # If source is low-res, use a gentler multiplier to avoid excessive upscale.
+    upscale_ratio = max(src_w, src_h) / max(width, height)
+    if upscale_ratio >= 1.0:
+        # Source is >= output resolution — 2× prescale is fine
+        pre_multiplier = 2.0
+        needs_sharpening = False
+    else:
+        # Source is smaller than output (e.g., 1024px Zillow for 1920px output).
+        # Limit prescale to 1.2× output to reduce upscale blur, and sharpen.
+        pre_multiplier = 1.2
+        needs_sharpening = True
+
+    pre_w = int(width * pre_multiplier)
+    pre_h = int(height * pre_multiplier)
     prescale_filter = (
         f"scale={pre_w}:{pre_h}"
         f":force_original_aspect_ratio=increase:flags=lanczos,"
         f"crop={pre_w}:{pre_h},setsar=1"
     )
+    # Adaptive sharpening for upscaled low-res sources — recovers edge
+    # detail lost during Lanczos interpolation without over-sharpening.
+    if needs_sharpening:
+        prescale_filter += ",unsharp=5:5:0.8:5:5:0.4"
+
+    # Reduce zoom range for low-res sources to avoid magnifying upscale artifacts.
+    max_zoom = 0.15 if upscale_ratio >= 1.0 else 0.08
+    steady_zoom = 1.10 if upscale_ratio >= 1.0 else 1.05
 
     # Build zoompan expressions based on motion style.
-    # pan range = iw - iw/z; at z=1.10 that's ~9% of iw (~346 px on 3840).
-    # At z=1.15 it's ~13% (~500 px). Both give >1 px/frame = smooth.
     if motion == "push_in":
-        z_expr = f"1+0.15*(on/{fd})"
+        z_expr = f"1+{max_zoom}*(on/{fd})"
         x_expr = f"(iw-iw/zoom)/2"
         y_expr = f"(ih-ih/zoom)/2"
     elif motion == "pull_back":
-        z_expr = f"1.15-0.15*(on/{fd})"
+        z_expr = f"{1+max_zoom}-{max_zoom}*(on/{fd})"
         x_expr = f"(iw-iw/zoom)/2"
         y_expr = f"(ih-ih/zoom)/2"
     elif motion == "pan_right":
-        z_expr = "1.10"
+        z_expr = f"{steady_zoom}"
         x_expr = f"(iw-iw/zoom)*(0.05+0.90*(on/{fd}))"
         y_expr = f"(ih-ih/zoom)/2"
     elif motion == "pan_left":
-        z_expr = "1.10"
+        z_expr = f"{steady_zoom}"
         x_expr = f"(iw-iw/zoom)*(0.95-0.90*(on/{fd}))"
         y_expr = f"(ih-ih/zoom)/2"
     elif motion == "tilt_up":
-        z_expr = "1.10"
+        z_expr = f"{steady_zoom}"
         x_expr = f"(iw-iw/zoom)/2"
         y_expr = f"(ih-ih/zoom)*(0.85-0.70*(on/{fd}))"
     else:
         # Fallback: push_in
-        z_expr = f"1+0.15*(on/{fd})"
+        z_expr = f"1+{max_zoom}*(on/{fd})"
         x_expr = f"(iw-iw/zoom)/2"
         y_expr = f"(ih-ih/zoom)/2"
 
@@ -714,7 +746,9 @@ def render_clip(
     # Use near-lossless CRF for intermediate clips — the final assembly
     # re-encodes at the target CRF so encoding twice at higher CRF was
     # causing visible quality loss compared to the source photos.
-    codec_args = get_video_codec_args(crf=8, preset="slow", intermediate=True)
+    # "fast" preset is fine here since CRF 8 at any preset is visually
+    # identical, and these are intermediates that get re-encoded. ~3x faster.
+    codec_args = get_video_codec_args(crf=8, preset="fast", intermediate=True)
     cmd = [
         "ffmpeg", "-y",
         "-i", image_path,
@@ -767,13 +801,14 @@ def render_all_clips(
     width: int = 1920,
     height: int = 1080,
 ) -> list[dict]:
-    """Render all clips with room-aware motion styles."""
-    logger.info(f"Rendering {len(clips)} video clips...")
+    """Render all clips in parallel with room-aware motion styles."""
+    n = len(clips)
+    workers = min(settings.max_render_workers, n)
+    logger.info(f"Rendering {n} video clips ({workers} parallel workers)...")
 
-    for i, clip in enumerate(clips):
+    def _render_one(i: int, clip: dict) -> tuple[int, str]:
         clip_path = os.path.join(work_dir, f"clip_{i:03d}.mp4")
         motion = motion_for_room(clip.get("room_label", "other"), i)
-
         render_clip(
             image_path=clip["path"],
             audio_path=clip["audio_path"],
@@ -784,8 +819,13 @@ def render_all_clips(
             height=height,
             fps=settings.video_fps,
         )
+        return i, clip_path
 
-        clip["clip_path"] = clip_path
+    with ThreadPoolExecutor(max_workers=workers) as pool:
+        futures = {pool.submit(_render_one, i, clip): i for i, clip in enumerate(clips)}
+        for future in as_completed(futures):
+            i, clip_path = future.result()
+            clips[i]["clip_path"] = clip_path
 
     return clips
 
@@ -1087,7 +1127,7 @@ def render_intro_card(
         f"fade=t=out:st={duration - 0.5:.3f}:d=0.5"
     )
 
-    codec_args = get_video_codec_args(crf=8, preset="slow", intermediate=True)
+    codec_args = get_video_codec_args(crf=8, preset="fast", intermediate=True)
     cmd = [
         "ffmpeg", "-y",
         "-loop", "1",
@@ -1134,7 +1174,7 @@ def render_outro_card(
         f"fade=t=out:st={duration - 1.0:.3f}:d=1.0"
     )
 
-    codec_args = get_video_codec_args(crf=8, preset="slow", intermediate=True)
+    codec_args = get_video_codec_args(crf=8, preset="fast", intermediate=True)
     cmd = [
         "ffmpeg", "-y",
         "-loop", "1",
@@ -1332,13 +1372,16 @@ def run_plan_only(job: VideoJob) -> dict:
         llm_provider, llm_client = create_llm_client()
         r2 = get_r2_client()
 
-        # Download images
-        image_paths = []
-        for i, key in enumerate(job.image_keys):
+        # Download images (parallel)
+        def _dl(args: tuple[int, str]) -> str | None:
+            i, key = args
             ext = Path(key).suffix or ".jpg"
             local_path = os.path.join(work_dir, f"img_{i:03d}{ext}")
-            if download_image(r2, key, local_path):
-                image_paths.append(local_path)
+            return local_path if download_image(r2, key, local_path) else None
+
+        with ThreadPoolExecutor(max_workers=6) as pool:
+            results = list(pool.map(_dl, enumerate(job.image_keys)))
+        image_paths = [p for p in results if p is not None]
 
         if not image_paths:
             return {"error": "No images could be downloaded", "clips": []}
@@ -1381,16 +1424,19 @@ def run_pipeline(job: VideoJob) -> PipelineResult:
         llm_provider, llm_client = create_llm_client()
         r2 = get_r2_client()
 
-        # ── Stage 1: Download images
+        # ── Stage 1: Download images (parallel)
         report_status(job.video_id, "processing", "Downloading images")
         logger.info(f"Downloading {len(job.image_keys)} images...")
 
-        image_paths = []
-        for i, key in enumerate(job.image_keys):
+        def _download_one(args: tuple[int, str]) -> str | None:
+            i, key = args
             ext = Path(key).suffix or ".jpg"
             local_path = os.path.join(work_dir, f"img_{i:03d}{ext}")
-            if download_image(r2, key, local_path):
-                image_paths.append(local_path)
+            return local_path if download_image(r2, key, local_path) else None
+
+        with ThreadPoolExecutor(max_workers=6) as pool:
+            results = list(pool.map(_download_one, enumerate(job.image_keys)))
+        image_paths = [p for p in results if p is not None]
 
         if not image_paths:
             raise RuntimeError("No images could be downloaded")
