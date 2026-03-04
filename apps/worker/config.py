@@ -31,8 +31,8 @@ class Settings(BaseSettings):
     xfade_duration: float = 0.45
     narration_lead_in: float = 0.35
     narration_lead_out: float = 0.85
-    subtitle_font_size: int = 14
-    subtitle_margin_v: int = 96
+    subtitle_font_size: int = 10
+    subtitle_margin_v: int = 128
 
     class Config:
         env_file = ".env"

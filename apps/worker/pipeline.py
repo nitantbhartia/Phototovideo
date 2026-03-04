@@ -464,7 +464,7 @@ def render_clip(
     motion_filter = (
         f"scale={width}*{overscan}:{height}*{overscan},"
         f"crop={width}:{height}:x='{x_expr}':y='{y_expr}',"
-        f"fps={fps},trim=duration={clip_duration:.3f}"
+        f"fps={fps},trim=duration={clip_duration:.3f},setsar=1"
     )
 
     # Color grading: warm curves + slight brightness + vignette
@@ -476,13 +476,21 @@ def render_clip(
 
     # Full video filter chain
     video_filter = f"{motion_filter},{color_filter}"
+    audio_delay_ms = int(settings.narration_lead_in * 1000)
+    audio_filter = (
+        f"adelay={audio_delay_ms}|{audio_delay_ms},"
+        f"apad=pad_dur={clip_duration:.3f},"
+        f"atrim=duration={clip_duration:.3f}"
+    )
 
     cmd = [
         "ffmpeg", "-y",
         "-loop", "1",
         "-i", image_path,
         "-i", audio_path,
-        "-filter_complex", video_filter,
+        "-filter_complex", f"[0:v]{video_filter}[v];[1:a]{audio_filter}[a]",
+        "-map", "[v]",
+        "-map", "[a]",
         "-c:v", "libx264",
         "-preset", "medium",
         "-crf", str(settings.video_crf),
@@ -490,7 +498,7 @@ def render_clip(
         "-c:a", "aac",
         "-b:a", "192k",
         "-ar", "44100",
-        "-shortest",
+        "-t", f"{clip_duration:.3f}",
         "-movflags", "+faststart",
         output_path,
     ]
@@ -647,40 +655,33 @@ def assemble_final_video(
     # Build filter_complex for xfade chain
     filter_parts = []
 
+    audio_inputs = "".join(f"[{i}:a]" for i in range(n))
+
     # First xfade
     filter_parts.append(
         f"[0:v][1:v]xfade=transition=fade:duration={settings.xfade_duration}:offset={offsets[0]:.3f}[v01]"
     )
-    filter_parts.append(
-        f"[0:a][1:a]acrossfade=d={settings.xfade_duration}[a01]"
-    )
 
     for i in range(2, n):
         prev_v = f"v{(i-1):02d}{i:d}" if i == 2 else f"v{i-1}"
-        prev_a = f"a{(i-1):02d}{i:d}" if i == 2 else f"a{i-1}"
         curr_v = f"v{i}" if i < n - 1 else "vout"
-        curr_a = f"a{i}" if i < n - 1 else "aout"
 
         if i == 2:
             prev_v = "v01"
-            prev_a = "a01"
 
         filter_parts.append(
             f"[{prev_v}][{i}:v]xfade=transition=fade:duration={settings.xfade_duration}:offset={offsets[i-1]:.3f}[{curr_v}]"
         )
-        filter_parts.append(
-            f"[{prev_a}][{i}:a]acrossfade=d={settings.xfade_duration}[{curr_a}]"
-        )
 
     if n == 2:
         final_v = "v01"
-        final_a = "a01"
     else:
         final_v = "vout"
-        final_a = "aout"
 
     filter_parts.append(f"[{final_v}]{subtitle_filter}[vsub]")
     final_v = "vsub"
+    filter_parts.append(f"{audio_inputs}concat=n={n}:v=0:a=1[aout]")
+    final_a = "aout"
 
     # Watermark filter
     if watermark:
