@@ -6,8 +6,6 @@ import { usePathname } from "next/navigation";
 import { Button } from "@/components/ui/button";
 import { Film } from "lucide-react";
 
-const hasClerkPublishableKey =
-  !!process.env.NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY && process.env.GUEST_MODE !== "true";
 const ClerkNavbar = dynamic(
   () => import("./clerk-navbar").then((module) => module.ClerkNavbar),
   { ssr: false }
@@ -83,6 +81,6 @@ function PublicNavbar() {
   );
 }
 
-export function Navbar() {
-  return hasClerkPublishableKey ? <ClerkNavbar /> : <PublicNavbar />;
+export function Navbar({ clerkEnabled = false }: { clerkEnabled?: boolean }) {
+  return clerkEnabled ? <ClerkNavbar /> : <PublicNavbar />;
 }

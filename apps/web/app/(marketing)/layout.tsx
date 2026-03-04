@@ -5,9 +5,14 @@ export default function MarketingLayout({
 }: {
   children: React.ReactNode;
 }) {
+  const clerkEnabled =
+    process.env.GUEST_MODE !== "true" &&
+    !!process.env.NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY &&
+    !!process.env.CLERK_SECRET_KEY;
+
   return (
     <div className="min-h-screen flex flex-col">
-      <Navbar />
+      <Navbar clerkEnabled={clerkEnabled} />
       <main className="flex-1">{children}</main>
       <footer className="border-t border-border bg-charcoal text-cream-100 py-12">
         <div className="container">
