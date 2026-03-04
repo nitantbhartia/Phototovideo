@@ -30,8 +30,8 @@ class Settings(BaseSettings):
     xfade_duration: float = 0.45
     narration_lead_in: float = 0.35
     narration_lead_out: float = 0.85
-    subtitle_font_size: int = 8
-    subtitle_margin_v: int = 160
+    subtitle_font_size: int = 18
+    subtitle_margin_v: int = 80
     background_music_volume: float = 0.14
 
     class Config:

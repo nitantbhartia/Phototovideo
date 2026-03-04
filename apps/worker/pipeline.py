@@ -449,30 +449,22 @@ def render_clip(
     Render a single clip with Ken Burns effect, color grade, and audio.
     zoom_direction: "in" (slow zoom in) or "out" (slow zoom out)
     """
-    # Stable overscan pan. Avoid zoompan because it creates visible jitter.
-    travel_x = "40"
-    travel_y = "18"
-    overscan = "1.12"
-
-    if zoom_direction == "in":
-        x_expr = f"-(t/{clip_duration:.3f})*{travel_x}"
-        y_expr = f"-(t/{clip_duration:.3f})*{travel_y}"
-    else:
-        x_expr = f"-{travel_x}+((t/{clip_duration:.3f})*{travel_x})"
-        y_expr = f"-{travel_y}+((t/{clip_duration:.3f})*{travel_y})"
+    # Stable, aspect-preserving pan over a lightly overscanned frame.
+    total_frames = max(int(clip_duration * fps), 1)
+    progress_expr = f"(n/{max(total_frames - 1, 1)})"
+    x_bias = "0.08" if zoom_direction == "in" else "-0.08"
+    y_bias = "0.04" if zoom_direction == "in" else "-0.04"
 
     motion_filter = (
-        f"scale={width}*{overscan}:{height}*{overscan},"
-        f"crop={width}:{height}:x='{x_expr}':y='{y_expr}',"
+        f"scale={width}:{height}:force_original_aspect_ratio=increase:flags=lanczos,"
+        f"crop={width}:{height}:"
+        f"x='(iw-ow)*0.5 + ((iw-ow)*{x_bias})*({progress_expr}-0.5)':"
+        f"y='(ih-oh)*0.5 + ((ih-oh)*{y_bias})*({progress_expr}-0.5)',"
         f"fps={fps},trim=duration={clip_duration:.3f},setsar=1"
     )
 
-    # Color grading: warm curves + slight brightness + vignette
-    color_filter = (
-        "curves=r='0/0 0.5/0.56 1/1':g='0/0 0.5/0.5 1/1':b='0/0 0.5/0.44 1/0.95',"
-        "eq=brightness=0.02:contrast=1.05:saturation=1.1,"
-        "vignette=PI/4"
-    )
+    # Keep the source look mostly intact. Prior grading was making the stills feel degraded.
+    color_filter = "eq=brightness=0.005:contrast=1.01:saturation=1.03,unsharp=5:5:0.4:5:5:0.0"
 
     # Full video filter chain
     video_filter = f"{motion_filter},{color_filter}"
@@ -492,7 +484,7 @@ def render_clip(
         "-map", "[v]",
         "-map", "[a]",
         "-c:v", "libx264",
-        "-preset", "medium",
+        "-preset", "slow",
         "-crf", str(settings.video_crf),
         "-pix_fmt", "yuv420p",
         "-c:a", "aac",
@@ -555,7 +547,7 @@ def create_srt_file(clips: list[dict], srt_path: str):
             f.write(f"{fmt_time(start)} --> {fmt_time(end)}\n")
             f.write(f"{clip['narration']}\n\n")
 
-            current_time = current_time + clip["clip_duration"] - settings.xfade_duration
+            current_time = current_time + clip["clip_duration"]
 
 
 def ensure_background_music(track_duration: float, work_dir: str) -> str | None:
@@ -615,9 +607,8 @@ def assemble_final_video(
     # Add subtitles for every final output, including single-image jobs.
     srt_path = os.path.join(work_dir, "subtitles.srt")
     create_srt_file(clips, srt_path)
-
     subtitle_filter = (
-        f"subtitles={srt_path}:force_style="
+        f"subtitles={srt_path}:original_size={settings.video_width}x{settings.video_height}:force_style="
         f"'FontName=Arial,FontSize={settings.subtitle_font_size},PrimaryColour=&H00FFFFFF,"
         f"OutlineColour=&H26000000,BackColour=&H40000000,"
         f"BorderStyle=3,Outline=1,Shadow=0,MarginV={settings.subtitle_margin_v},Alignment=2'"
@@ -628,9 +619,7 @@ def assemble_final_video(
         "fontsize=24:x=w-tw-20:y=h-th-20:font=Arial"
     )
 
-    total_duration = sum(clip["clip_duration"] for clip in clips) - (
-        max(len(clips) - 1, 0) * settings.xfade_duration
-    )
+    total_duration = sum(clip["clip_duration"] for clip in clips)
     music_file = ensure_background_music(total_duration, work_dir) if add_music else None
     has_music_file = bool(music_file)
 
@@ -678,47 +667,17 @@ def assemble_final_video(
             raise RuntimeError(f"ffmpeg assembly failed: {result.stderr[-1000:]}")
         return
 
-    # Build xfade filter chain
-    # For N clips: N-1 xfade transitions
+    # Build hard-cut concat chain. This avoids overlapping captions and speech.
     n = len(clips)
     inputs = []
     for clip in clips:
         inputs.extend(["-i", clip["clip_path"]])
 
-    # Calculate offsets for xfade
-    offsets = []
-    cumulative = 0.0
-    for i in range(n - 1):
-        cumulative += clips[i]["clip_duration"] - settings.xfade_duration
-        offsets.append(cumulative)
-
-    # Build filter_complex for xfade chain
     filter_parts = []
-
     audio_inputs = "".join(f"[{i}:a]" for i in range(n))
-
-    # First xfade
-    filter_parts.append(
-        f"[0:v][1:v]xfade=transition=fade:duration={settings.xfade_duration}:offset={offsets[0]:.3f}[v01]"
-    )
-
-    for i in range(2, n):
-        prev_v = f"v{(i-1):02d}{i:d}" if i == 2 else f"v{i-1}"
-        curr_v = f"v{i}" if i < n - 1 else "vout"
-
-        if i == 2:
-            prev_v = "v01"
-
-        filter_parts.append(
-            f"[{prev_v}][{i}:v]xfade=transition=fade:duration={settings.xfade_duration}:offset={offsets[i-1]:.3f}[{curr_v}]"
-        )
-
-    if n == 2:
-        final_v = "v01"
-    else:
-        final_v = "vout"
-
-    filter_parts.append(f"[{final_v}]{subtitle_filter}[vsub]")
+    video_inputs = "".join(f"[{i}:v]" for i in range(n))
+    filter_parts.append(f"{video_inputs}concat=n={n}:v=1:a=0[vcat]")
+    filter_parts.append(f"[vcat]{subtitle_filter}[vsub]")
     final_v = "vsub"
     filter_parts.append(f"{audio_inputs}concat=n={n}:v=0:a=1[aout]")
     final_a = "aout"
