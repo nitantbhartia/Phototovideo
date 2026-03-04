@@ -463,17 +463,18 @@ def render_clip(
         f"crop={pre_w}:{pre_h},setsar=1"
     )
 
-    # Smooth Ken Burns: 6 % zoom range + subtle directional drift
+    # Ken Burns: 15% zoom range + noticeable directional pan.
+    # Previous 6% was too subtle and looked like a slideshow.
     if zoom_direction == "in":
-        # Gentle zoom in (1.00 → 1.06) with slight drift right-down
-        z_expr = f"1+0.06*(on/{frame_denom})"
-        x_expr = f"(iw-iw/zoom)/2+0.008*iw*(on/{frame_denom})"
-        y_expr = f"(ih-ih/zoom)/2+0.004*ih*(on/{frame_denom})"
+        # Zoom in (1.00 → 1.15) with pan drifting right-down
+        z_expr = f"1+0.15*(on/{frame_denom})"
+        x_expr = f"(iw-iw/zoom)/2+0.02*iw*(on/{frame_denom})"
+        y_expr = f"(ih-ih/zoom)/2+0.01*ih*(on/{frame_denom})"
     else:
-        # Gentle zoom out (1.06 → 1.00) with slight drift left-up
-        z_expr = f"1.06-0.06*(on/{frame_denom})"
-        x_expr = f"(iw-iw/zoom)/2-0.008*iw*(1-on/{frame_denom})"
-        y_expr = f"(ih-ih/zoom)/2-0.004*ih*(1-on/{frame_denom})"
+        # Zoom out (1.15 → 1.00) with pan drifting left-up
+        z_expr = f"1.15-0.15*(on/{frame_denom})"
+        x_expr = f"(iw-iw/zoom)/2-0.02*iw*(1-on/{frame_denom})"
+        y_expr = f"(ih-ih/zoom)/2-0.01*ih*(1-on/{frame_denom})"
 
     zoompan_filter = (
         f"zoompan=z='{z_expr}':x='{x_expr}':y='{y_expr}'"
