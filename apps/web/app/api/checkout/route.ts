@@ -1,12 +1,16 @@
 import { NextRequest, NextResponse } from "next/server";
 import { createCheckoutSession, PLANS } from "@/lib/stripe";
 import { absoluteUrl } from "@/lib/utils";
-import { getClerkUserId, getCurrentClerkUser } from "@/lib/auth";
 
 export const dynamic = "force-dynamic";
 
 export async function GET(req: NextRequest) {
   try {
+    if (process.env.GUEST_MODE === "true") {
+      return NextResponse.redirect(absoluteUrl("/generate"));
+    }
+
+    const { getClerkUserId, getCurrentClerkUser } = await import("@/lib/auth");
     const clerkId = await getClerkUserId();
     if (!clerkId) {
       return NextResponse.redirect(absoluteUrl("/sign-in"));
