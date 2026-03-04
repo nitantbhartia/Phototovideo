@@ -35,11 +35,21 @@ export default function RootLayout({
 }: {
   children: React.ReactNode;
 }) {
+  const publishableKey = process.env.NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY;
+
+  const content = (
+    <html lang="en" suppressHydrationWarning>
+      <body className={`${inter.variable} font-sans`}>{children}</body>
+    </html>
+  );
+
+  if (!publishableKey) {
+    return content;
+  }
+
   return (
-    <ClerkProvider>
-      <html lang="en" suppressHydrationWarning>
-        <body className={`${inter.variable} font-sans`}>{children}</body>
-      </html>
+    <ClerkProvider publishableKey={publishableKey}>
+      {content}
     </ClerkProvider>
   );
 }

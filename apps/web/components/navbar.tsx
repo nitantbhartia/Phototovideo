@@ -6,8 +6,15 @@ import { SignInButton, SignUpButton, UserButton, useUser } from "@clerk/nextjs";
 import { Button } from "@/components/ui/button";
 import { Film } from "lucide-react";
 
-export function Navbar() {
-  const { isSignedIn } = useUser();
+const hasClerkPublishableKey = !!process.env.NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY;
+
+function NavbarShell({
+  isSignedIn,
+  authControls,
+}: {
+  isSignedIn: boolean;
+  authControls: React.ReactNode;
+}) {
   const pathname = usePathname();
   const isMarketing = pathname === "/" || pathname === "/pricing";
 
@@ -51,27 +58,58 @@ export function Navbar() {
         </nav>
 
         <div className="flex items-center gap-3">
-          {isSignedIn ? (
-            <>
-              <Button asChild size="sm">
-                <Link href="/generate">Create Video</Link>
-              </Button>
-              <UserButton afterSignOutUrl="/" />
-            </>
-          ) : (
-            <>
-              <SignInButton mode="modal">
-                <Button variant="ghost" size="sm">
-                  Sign In
-                </Button>
-              </SignInButton>
-              <SignUpButton mode="modal">
-                <Button size="sm">Get Started</Button>
-              </SignUpButton>
-            </>
-          )}
+          {authControls}
         </div>
       </div>
     </header>
   );
+}
+
+function ClerkNavbar() {
+  const { isSignedIn } = useUser();
+  const signedIn = !!isSignedIn;
+
+  return (
+    <NavbarShell
+      isSignedIn={signedIn}
+      authControls={
+        signedIn ? (
+          <>
+            <Button asChild size="sm">
+              <Link href="/generate">Create Video</Link>
+            </Button>
+            <UserButton afterSignOutUrl="/" />
+          </>
+        ) : (
+          <>
+            <SignInButton mode="modal">
+              <Button variant="ghost" size="sm">
+                Sign In
+              </Button>
+            </SignInButton>
+            <SignUpButton mode="modal">
+              <Button size="sm">Get Started</Button>
+            </SignUpButton>
+          </>
+        )
+      }
+    />
+  );
+}
+
+function PublicNavbar() {
+  return (
+    <NavbarShell
+      isSignedIn={false}
+      authControls={
+        <Button asChild size="sm">
+          <Link href="/pricing">Get Started</Link>
+        </Button>
+      }
+    />
+  );
+}
+
+export function Navbar() {
+  return hasClerkPublishableKey ? <ClerkNavbar /> : <PublicNavbar />;
 }
