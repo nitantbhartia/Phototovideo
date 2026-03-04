@@ -39,9 +39,13 @@ export interface VideoJob {
   address: string;
   propertyType: string;
   tone: string;
+  voiceId: string;
+  musicStyle: string;
+  aspectRatio: string;
   imageKeys: string[];
   autoSort: boolean;
   addMusic: boolean;
+  editedClips?: { imageIndex: number; narration: string }[];
 }
 
 function isGuestMode() {

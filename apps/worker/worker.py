@@ -13,7 +13,7 @@ from fastapi.responses import JSONResponse
 from pydantic import BaseModel
 
 from config import settings
-from pipeline import VideoJob, run_pipeline
+from pipeline import VideoJob, run_pipeline, run_plan_only
 
 logging.basicConfig(
     level=logging.INFO,
@@ -32,15 +32,24 @@ async def lifespan(app: FastAPI):
 app = FastAPI(title="ListingReel Worker", version="1.0.0", lifespan=lifespan)
 
 
+class EditedClip(BaseModel):
+    imageIndex: int
+    narration: str
+
+
 class ProcessRequest(BaseModel):
     videoId: str
     userId: str
     address: str
     propertyType: str = "Single Family"
     tone: str = "Warm & Inviting"
+    voiceId: str = "rachel"
+    musicStyle: str = "ambient"
+    aspectRatio: str = "16:9"
     imageKeys: list[str]
     autoSort: bool = True
     addMusic: bool = True
+    editedClips: list[EditedClip] | None = None
 
 
 @app.get("/health")
@@ -96,6 +105,43 @@ async def process_video(
     background_tasks.add_task(run_pipeline_task, job)
 
     return JSONResponse({"accepted": True, "videoId": job.video_id})
+
+
+class PlanRequest(BaseModel):
+    videoId: str
+    userId: str
+    address: str
+    propertyType: str = "Single Family"
+    tone: str = "Warm & Inviting"
+    imageKeys: list[str]
+    autoSort: bool = True
+
+
+@app.post("/plan")
+async def plan_video(
+    request: Request,
+    body: PlanRequest,
+    x_worker_secret: str = Header(None, alias="x-worker-secret"),
+):
+    """
+    Run classification + narration only and return the plan for user review.
+    This enables the edit-before-render flow.
+    """
+    qstash_sig = request.headers.get("upstash-signature")
+
+    if not qstash_sig and x_worker_secret != settings.worker_secret:
+        raise HTTPException(status_code=401, detail="Unauthorized")
+
+    job_data = body.model_dump(by_alias=False)
+    job_data["videoId"] = body.videoId
+    job_data["userId"] = body.userId
+    job_data["imageKeys"] = body.imageKeys
+
+    job = VideoJob(job_data)
+    logger.info(f"Plan request for video {job.video_id} — {job.address}")
+
+    result = run_plan_only(job)
+    return JSONResponse(result)
 
 
 async def run_pipeline_task(job: VideoJob):
