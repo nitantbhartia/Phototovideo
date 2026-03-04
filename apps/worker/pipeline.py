@@ -144,7 +144,8 @@ class VideoJob:
         self.image_keys = data["imageKeys"]
         self.auto_sort = data.get("autoSort", True)
         self.add_music = data.get("addMusic", True)
-        self.video_quality = data.get("videoQuality", "standard")  # "ai" or "standard"
+        # Backward-compatible default: older clients may omit this field.
+        self.video_quality = data.get("videoQuality", "ai")
         self.edited_clips = data.get("editedClips", None)
 
 
@@ -1858,7 +1859,11 @@ def run_pipeline(job: VideoJob) -> PipelineResult:
         # ── Stages 4-5: Render + Assemble (once per aspect ratio)
         # AI-only mode: no Ken Burns fallback.
         if job.video_quality != "ai":
-            raise RuntimeError("Only videoQuality='ai' is supported")
+            logger.warning(
+                "Received non-ai videoQuality=%s; coercing to ai for compatibility",
+                job.video_quality,
+            )
+            job.video_quality = "ai"
 
         provider = settings.video_gen_provider.lower().strip()
         if provider not in {"luma", "runway"}:
