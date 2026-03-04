@@ -1,0 +1,10 @@
+{
+  "name": "listingreel",
+  "private": true,
+  "workspaces": ["apps/web"],
+  "scripts": {
+    "dev": "cd apps/web && npm run dev",
+    "build": "cd apps/web && npm run build",
+    "lint": "cd apps/web && npm run lint"
+  }
+}

@@ -1,0 +1,14 @@
+[build]
+builder = "dockerfile"
+dockerfilePath = "apps/worker/Dockerfile"
+buildContext = "apps/worker"
+
+[deploy]
+startCommand = "python worker.py"
+healthcheckPath = "/health"
+healthcheckTimeout = 300
+restartPolicyType = "on_failure"
+restartPolicyMaxRetries = 3
+
+[[services]]
+name = "listingreel-worker"
