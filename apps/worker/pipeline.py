@@ -446,48 +446,52 @@ def render_clip(
     fps: int = 24,
 ):
     """
-    Render a single clip with Ken Burns effect, color grade, and audio.
-    zoom_direction: "in" (slow zoom in) or "out" (slow zoom out)
+    Render a single clip with Ken Burns (zoom + pan) effect, color grade, and audio.
+    Uses ffmpeg zoompan filter for smooth sub-pixel animation instead of
+    scale+crop which causes jitter from integer pixel rounding.
     """
     total_frames = max(int(clip_duration * fps), 1)
-    progress_expr = f"(n/{max(total_frames - 1, 1)})"
+    frame_denom = max(total_frames - 1, 1)
 
-    # Scale to 110% of output to give room for Ken Burns panning while
-    # minimising upscale softness on lower-res sources (e.g. Zillow ~1024px).
-    overscan_w = int(width * 1.10)
-    overscan_h = int(height * 1.10)
+    # Pre-scale to 2× output so zoompan never upscales (important for
+    # lower-res sources like Zillow ~1024 px).
+    pre_w = width * 2
+    pre_h = height * 2
+    prescale_filter = (
+        f"scale={pre_w}:{pre_h}"
+        f":force_original_aspect_ratio=increase:flags=lanczos,"
+        f"crop={pre_w}:{pre_h},setsar=1"
+    )
 
+    # Smooth Ken Burns: 6 % zoom range + subtle directional drift
     if zoom_direction == "in":
-        # Slow pan from upper-left toward lower-right
-        x_start, x_end = "0.15", "0.75"
-        y_start, y_end = "0.25", "0.65"
+        # Gentle zoom in (1.00 → 1.06) with slight drift right-down
+        z_expr = f"1+0.06*(on/{frame_denom})"
+        x_expr = f"(iw-iw/zoom)/2+0.008*iw*(on/{frame_denom})"
+        y_expr = f"(ih-ih/zoom)/2+0.004*ih*(on/{frame_denom})"
     else:
-        # Slow pan from lower-right toward upper-left
-        x_start, x_end = "0.80", "0.25"
-        y_start, y_end = "0.70", "0.35"
+        # Gentle zoom out (1.06 → 1.00) with slight drift left-up
+        z_expr = f"1.06-0.06*(on/{frame_denom})"
+        x_expr = f"(iw-iw/zoom)/2-0.008*iw*(1-on/{frame_denom})"
+        y_expr = f"(ih-ih/zoom)/2-0.004*ih*(1-on/{frame_denom})"
 
-    x_expr = f"(iw-ow)*({x_start}+({x_end}-{x_start})*{progress_expr})"
-    y_expr = f"(ih-oh)*({y_start}+({y_end}-{y_start})*{progress_expr})"
+    zoompan_filter = (
+        f"zoompan=z='{z_expr}':x='{x_expr}':y='{y_expr}'"
+        f":d={total_frames}:s={width}x{height}:fps={fps}"
+    )
+
+    # Light colour grade — no unsharp (amplifies JPEG artefacts on upscaled sources)
+    color_filter = "eq=brightness=0.005:contrast=1.01:saturation=1.03"
 
     # Fade in/out for smooth visual transitions between clips
     fade_dur = 0.5
     fade_out_start = max(clip_duration - fade_dur, 0)
-
-    motion_filter = (
-        f"scale={overscan_w}:{overscan_h}:force_original_aspect_ratio=increase:flags=lanczos,"
-        f"crop={width}:{height}:x='{x_expr}':y='{y_expr}',"
-        f"fps={fps},trim=duration={clip_duration:.3f},setsar=1"
-    )
-
-    # Light colour grade only — no unsharp (amplifies JPEG artifacts on upscaled sources)
-    color_filter = "eq=brightness=0.005:contrast=1.01:saturation=1.03"
-
     fade_filter = (
         f"fade=t=in:st=0:d={fade_dur},"
         f"fade=t=out:st={fade_out_start:.3f}:d={fade_dur}"
     )
 
-    video_filter = f"{motion_filter},{color_filter},{fade_filter}"
+    video_filter = f"{prescale_filter},{zoompan_filter},{color_filter},{fade_filter}"
     audio_delay_ms = int(settings.narration_lead_in * 1000)
     audio_filter = (
         f"adelay={audio_delay_ms}|{audio_delay_ms},"
@@ -497,7 +501,6 @@ def render_clip(
 
     cmd = [
         "ffmpeg", "-y",
-        "-loop", "1",
         "-i", image_path,
         "-i", audio_path,
         "-filter_complex", f"[0:v]{video_filter}[v];[1:a]{audio_filter}[a]",
@@ -593,16 +596,24 @@ def ensure_background_music(track_duration: float, work_dir: str) -> str | None:
         return bundled_music
 
     generated_music = os.path.join(work_dir, "background-bed.wav")
-    fade_duration = min(1.5, max(track_duration / 6, 0.6))
+    fade_duration = min(2.0, max(track_duration / 4, 1.0))
     fade_out_start = max(track_duration - fade_duration, 0)
+
+    # Ambient pad: A-minor chord with harmonics at audible amplitude.
+    # Previous amplitudes (0.020/0.012/0.010) were ~50 dB below speech
+    # and completely inaudible after volume + amix reduction.
     synth_expr = (
         "aevalsrc="
-        "0.020*sin(2*PI*220*t)+"
-        "0.012*sin(2*PI*277.18*t)+"
-        "0.010*sin(2*PI*329.63*t)|"
-        "0.020*sin(2*PI*220*t)+"
-        "0.012*sin(2*PI*277.18*t)+"
-        f"0.010*sin(2*PI*329.63*t):s=44100:d={track_duration:.3f}"
+        "0.18*sin(2*PI*110*t)+"
+        "0.12*sin(2*PI*220*t)+"
+        "0.10*sin(2*PI*261.63*t)+"
+        "0.08*sin(2*PI*329.63*t)+"
+        "0.04*sin(2*PI*440*t)|"
+        "0.18*sin(2*PI*110*t)+"
+        "0.12*sin(2*PI*220*t)+"
+        "0.10*sin(2*PI*261.63*t)+"
+        "0.08*sin(2*PI*329.63*t)+"
+        f"0.04*sin(2*PI*440*t):s=44100:d={track_duration:.3f}"
     )
 
     cmd = [
@@ -610,7 +621,7 @@ def ensure_background_music(track_duration: float, work_dir: str) -> str | None:
         "-f", "lavfi",
         "-i", synth_expr,
         "-af",
-        f"lowpass=f=1200,highpass=f=80,"
+        f"lowpass=f=800,highpass=f=60,"
         f"afade=t=in:st=0:d={fade_duration:.3f},"
         f"afade=t=out:st={fade_out_start:.3f}:d={fade_duration:.3f}",
         generated_music,
@@ -670,7 +681,7 @@ def assemble_final_video(
                 f"[1:a]volume={settings.background_music_volume}[music]"
             )
             filter_parts.append(
-                f"[0:a][music]amix=inputs=2:duration=first[afinal]"
+                f"[0:a][music]amix=inputs=2:duration=first:normalize=0[afinal]"
             )
             final_a = "[afinal]"
 
@@ -728,7 +739,7 @@ def assemble_final_video(
             music_idx = n
             filter_complex += (
                 f";[{music_idx}:a]volume={settings.background_music_volume}[music]"
-                f";[{final_a}][music]amix=inputs=2:duration=first[afinal]"
+                f";[{final_a}][music]amix=inputs=2:duration=first:normalize=0[afinal]"
             )
             final_a = "afinal"
         cmd = (
