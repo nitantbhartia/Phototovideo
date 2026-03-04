@@ -134,20 +134,25 @@ export function GenerateClient() {
       });
 
       if (!presignRes.ok) throw new Error("Failed to get upload URLs");
-      const { uploadUrls, keys, videoId: newVideoId } = await presignRes.json();
+      const { keys, videoId: newVideoId } = await presignRes.json();
       setVideoId(newVideoId);
 
-      // Step 2: Upload directly to R2
+      // Step 2: Upload through the app server to avoid browser->R2 CORS issues
       setProgress(10);
-      await Promise.all(
-        uploadUrls.map((url: string, i: number) =>
-          fetch(url, {
-            method: "PUT",
+      const uploadResults = await Promise.all(
+        keys.map(async (key: string, i: number) => {
+          const res = await fetch(`/api/upload/file?key=${encodeURIComponent(key)}`, {
+            method: "POST",
             body: files[i].file,
             headers: { "Content-Type": files[i].file.type },
-          })
-        )
+          });
+          return res.ok;
+        })
       );
+
+      if (uploadResults.some((ok) => !ok)) {
+        throw new Error("Failed to upload one or more photos");
+      }
 
       setProgress(20);
 

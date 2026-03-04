@@ -53,6 +53,22 @@ export async function generatePresignedUploadUrl(
   return getSignedUrl(r2Client, command, { expiresIn });
 }
 
+export async function uploadObject(
+  key: string,
+  body: Buffer | Uint8Array | Blob | string,
+  contentType: string
+): Promise<void> {
+  const r2Client = getR2Client();
+  await r2Client.send(
+    new PutObjectCommand({
+      Bucket: getBucket(),
+      Key: key,
+      Body: body,
+      ContentType: contentType,
+    })
+  );
+}
+
 export async function generatePresignedDownloadUrl(
   key: string,
   expiresIn = 3600
