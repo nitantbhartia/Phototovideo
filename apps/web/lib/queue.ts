@@ -71,6 +71,9 @@ async function dispatchVideoJobDirect(job: VideoJob): Promise<string> {
 
   if (!response.ok) {
     const errorText = await response.text();
+    if (response.status === 503 && errorText.toLowerCase().includes("first byte timeout")) {
+      return job.videoId;
+    }
     throw new Error(
       `Worker request failed with ${response.status}: ${errorText || "unknown error"}`
     );

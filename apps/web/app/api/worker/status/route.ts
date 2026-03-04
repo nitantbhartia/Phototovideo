@@ -34,8 +34,10 @@ export async function POST(req: NextRequest) {
     const { videoId, status, statusMessage, r2Key, thumbnailGifKey, durationSeconds, errorMessage } =
       parsed.data;
 
-    // Update Redis for real-time polling
-    await setVideoStatus(videoId, status, statusMessage);
+    // Redis is optional for polling in test mode; DB updates are the source of truth.
+    await setVideoStatus(videoId, status, statusMessage).catch((err) => {
+      console.warn("[worker status] Redis update failed", err);
+    });
 
     // Update DB
     const updateData: Partial<typeof videos.$inferInsert> = {
