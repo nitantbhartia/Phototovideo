@@ -19,12 +19,13 @@ class Settings(BaseSettings):
     worker_secret: str
     next_app_url: str  # Vercel URL for status callbacks
     elevenlabs_voice_id: str = "21m00Tcm4TlvDq8ikWAM"  # Rachel
+    elevenlabs_model: str = "eleven_multilingual_v2"
 
     # Video settings
     video_width: int = 1920
     video_height: int = 1080
     video_fps: int = 24
-    video_crf: int = 18
+    video_crf: int = 16
     clip_min_duration: float = 4.0
     clip_max_duration: float = 12.0
     xfade_duration: float = 0.45

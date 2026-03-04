@@ -409,10 +409,10 @@ def generate_audio(
         audio_bytes = eleven.generate(
             text=clip["narration"],
             voice=settings.elevenlabs_voice_id,
-            model="eleven_turbo_v2_5",
+            model=settings.elevenlabs_model,
             voice_settings=VoiceSettings(
-                stability=0.5,
-                similarity_boost=0.75,
+                stability=0.65,
+                similarity_boost=0.80,
                 style=0.0,
                 use_speaker_boost=True,
             ),
@@ -530,8 +530,18 @@ def render_clip(
         f":filter_algo=bicubic"
     )
 
-    # Light colour grade — no unsharp (amplifies JPEG artefacts on upscaled sources)
-    color_filter = "eq=brightness=0.005:contrast=1.01:saturation=1.03"
+    # Cinematic colour grade: warm highlights, lifted blacks, gentle saturation.
+    # curves adjusts the tone curve — lifts shadows (0/0.05) and rolls off
+    # highlights (1/0.95) for a filmic look. colorbalance pushes highlights
+    # warm (slight red/yellow shift). eq adds a touch of saturation.
+    color_filter = (
+        "curves=m='0/0.05 0.25/0.27 0.5/0.52 0.75/0.77 1/0.95',"
+        "colorbalance=rh=0.03:gh=0.01:bh=-0.02,"
+        "eq=saturation=1.08:contrast=1.02"
+    )
+
+    # Subtle vignette — darkens edges to draw the eye inward
+    vignette_filter = "vignette=PI/5"
 
     # Fade in/out for smooth visual transitions between clips
     fade_dur = 0.5
@@ -541,7 +551,7 @@ def render_clip(
         f"fade=t=out:st={fade_out_start:.3f}:d={fade_dur}"
     )
 
-    video_filter = f"{prescale_filter},{zoompan_filter},{color_filter},{fade_filter}"
+    video_filter = f"{prescale_filter},{zoompan_filter},{color_filter},{vignette_filter},{fade_filter}"
     audio_delay_ms = int(settings.narration_lead_in * 1000)
     audio_filter = (
         f"adelay={audio_delay_ms}|{audio_delay_ms},"
