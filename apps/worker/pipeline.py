@@ -81,6 +81,7 @@ class PipelineResult:
 def report_status(video_id: str, status: str, message: str = "", **kwargs):
     """Report status back to Vercel app."""
     try:
+        app_url = settings.next_app_url.strip().rstrip("/")
         payload = {
             "videoId": video_id,
             "status": status,
@@ -88,7 +89,7 @@ def report_status(video_id: str, status: str, message: str = "", **kwargs):
             **kwargs,
         }
         response = httpx.post(
-            f"{settings.next_app_url}/api/worker/status",
+            f"{app_url}/api/worker/status",
             json=payload,
             headers={"x-worker-secret": settings.worker_secret},
             timeout=10,
@@ -99,12 +100,13 @@ def report_status(video_id: str, status: str, message: str = "", **kwargs):
 
 
 def get_r2_client():
+    account_id = settings.r2_account_id.strip()
     return boto3.client(
         "s3",
         region_name="auto",
-        endpoint_url=f"https://{settings.r2_account_id}.r2.cloudflarestorage.com",
-        aws_access_key_id=settings.r2_access_key_id,
-        aws_secret_access_key=settings.r2_secret_access_key,
+        endpoint_url=f"https://{account_id}.r2.cloudflarestorage.com",
+        aws_access_key_id=settings.r2_access_key_id.strip(),
+        aws_secret_access_key=settings.r2_secret_access_key.strip(),
     )
 
 
