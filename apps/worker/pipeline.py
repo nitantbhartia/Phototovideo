@@ -111,7 +111,7 @@ class VideoJob:
         self.tone = data.get("tone", "Warm & Inviting")
         self.voice_id = data.get("voiceId", "rachel")
         self.music_style = data.get("musicStyle", "ambient")
-        self.aspect_ratio = data.get("aspectRatio", "16:9")
+        self.aspect_ratios = data.get("aspectRatios", ["16:9"])
         self.image_keys = data["imageKeys"]
         self.auto_sort = data.get("autoSort", True)
         self.add_music = data.get("addMusic", True)
@@ -1244,12 +1244,6 @@ def run_pipeline(job: VideoJob) -> PipelineResult:
     result = PipelineResult()
     work_dir = tempfile.mkdtemp(prefix=f"listingreel_{job.video_id}_")
 
-    # Resolve aspect ratio dimensions
-    ar = ASPECT_RATIOS.get(job.aspect_ratio, ASPECT_RATIOS["16:9"])
-    vid_width = ar["width"]
-    vid_height = ar["height"]
-    subtitle_mv = ar["subtitle_margin_v"]
-
     try:
         llm_provider, llm_client = create_llm_client()
         eleven = ElevenLabs(api_key=settings.elevenlabs_api_key)
@@ -1269,8 +1263,7 @@ def run_pipeline(job: VideoJob) -> PipelineResult:
         if not image_paths:
             raise RuntimeError("No images could be downloaded")
 
-        # ── Stages 1-2: Classification + Narration
-        # If editedClips is provided (edit-before-render flow), skip AI stages
+        # ── Stages 1-2: Classification + Narration (run once, shared across all aspect ratios)
         if job.edited_clips:
             logger.info("Using user-edited clip plan (skipping AI classification + narration)")
             clips = []
@@ -1284,7 +1277,6 @@ def run_pipeline(job: VideoJob) -> PipelineResult:
                         "narration": ec["narration"],
                     })
         else:
-            # Stage 1: Classify and sort
             stage_message = (
                 "Classifying & sorting rooms" if job.auto_sort else "Classifying rooms"
             )
@@ -1293,100 +1285,129 @@ def run_pipeline(job: VideoJob) -> PipelineResult:
                 llm_provider, llm_client, image_paths, job.address, job.property_type, job.auto_sort
             )
 
-            # Stage 2: Generate narrations
             report_status(job.video_id, "processing", "Writing narrations")
             clips = generate_narrations(
                 llm_provider, llm_client, clips, job.address, job.property_type, job.tone
             )
 
-        # ── Stage 3: TTS
+        # ── Stage 3: TTS (run once, audio is reused across aspect ratios)
         report_status(job.video_id, "processing", "Recording voiceover")
         clips = generate_audio(eleven, clips, work_dir, voice_id=job.voice_id)
 
-        # ── Stage 4: Render clips (+ intro/outro cards)
-        report_status(job.video_id, "processing", "Rendering video clips")
-        clips = render_all_clips(clips, work_dir, width=vid_width, height=vid_height)
-
-        # Render intro card
-        intro_path = os.path.join(work_dir, "intro_card.mp4")
-        has_intro = render_intro_card(
-            first_image=clips[0]["path"],
-            address=job.address,
-            property_type=job.property_type,
-            output_path=intro_path,
-            width=vid_width,
-            height=vid_height,
-            fps=settings.video_fps,
-        )
-
-        # Render outro card
-        outro_path = os.path.join(work_dir, "outro_card.mp4")
-        has_outro = render_outro_card(
-            last_image=clips[-1]["path"],
-            output_path=outro_path,
-            width=vid_width,
-            height=vid_height,
-            fps=settings.video_fps,
-        )
-
-        # Build the full clip list with intro/outro
-        all_clips = []
-        if has_intro:
-            all_clips.append({
-                "clip_path": intro_path,
-                "clip_duration": 3.0,
-                "narration": "",
-                "speech_start": 0,
-                "speech_end": 0,
-            })
-        all_clips.extend(clips)
-        if has_outro:
-            all_clips.append({
-                "clip_path": outro_path,
-                "clip_duration": 4.0,
-                "narration": "",
-                "speech_start": 0,
-                "speech_end": 0,
-            })
-
-        # ── Stage 5: Assemble
-        report_status(job.video_id, "processing", "Assembling final video")
-        output_path = os.path.join(work_dir, "output.mp4")
-        assemble_final_video(
-            clips=all_clips,
-            work_dir=work_dir,
-            output_path=output_path,
-            add_music=job.add_music,
-            watermark=True,
-            music_style=job.music_style,
-            width=vid_width,
-            height=vid_height,
-            subtitle_margin_v=subtitle_mv,
-        )
-
-        # Upload to R2
-        r2_key = f"videos/{job.user_id}/{job.video_id}/output.mp4"
-        logger.info(f"Uploading output to R2: {r2_key}")
-        r2.upload_file(
-            output_path,
-            settings.r2_bucket_name,
-            r2_key,
-            ExtraArgs={"ContentType": "video/mp4"},
-        )
-
-        duration = get_video_duration(output_path)
-        result.output_r2_key = r2_key
-        result.duration_seconds = duration
-
-        # Generate 3-second animated GIF thumbnail for email
+        # ── Stages 4-5: Render + Assemble (once per aspect ratio)
+        aspect_ratios = job.aspect_ratios or ["16:9"]
+        r2_keys = {}  # aspect_ratio -> r2_key
+        primary_output = None
+        primary_duration = None
         gif_r2_key = None
+
+        for ar_idx, ar_name in enumerate(aspect_ratios):
+            ar = ASPECT_RATIOS.get(ar_name, ASPECT_RATIOS["16:9"])
+            vid_width = ar["width"]
+            vid_height = ar["height"]
+            subtitle_mv = ar["subtitle_margin_v"]
+
+            ar_suffix = ar_name.replace(":", "x")
+            ar_dir = os.path.join(work_dir, f"ar_{ar_suffix}")
+            os.makedirs(ar_dir, exist_ok=True)
+
+            label = f"Rendering {ar_name}"
+            if len(aspect_ratios) > 1:
+                label = f"Rendering {ar_name} ({ar_idx + 1}/{len(aspect_ratios)})"
+            report_status(job.video_id, "processing", label)
+
+            # Stage 4: Render clips for this aspect ratio
+            ar_clips = render_all_clips(clips, ar_dir, width=vid_width, height=vid_height)
+
+            # Intro card
+            intro_path = os.path.join(ar_dir, "intro_card.mp4")
+            has_intro = render_intro_card(
+                first_image=clips[0]["path"],
+                address=job.address,
+                property_type=job.property_type,
+                output_path=intro_path,
+                width=vid_width,
+                height=vid_height,
+                fps=settings.video_fps,
+            )
+
+            # Outro card
+            outro_path = os.path.join(ar_dir, "outro_card.mp4")
+            has_outro = render_outro_card(
+                last_image=clips[-1]["path"],
+                output_path=outro_path,
+                width=vid_width,
+                height=vid_height,
+                fps=settings.video_fps,
+            )
+
+            # Build full clip list
+            all_clips = []
+            if has_intro:
+                all_clips.append({
+                    "clip_path": intro_path,
+                    "clip_duration": 3.0,
+                    "narration": "",
+                    "speech_start": 0,
+                    "speech_end": 0,
+                })
+            all_clips.extend(ar_clips)
+            if has_outro:
+                all_clips.append({
+                    "clip_path": outro_path,
+                    "clip_duration": 4.0,
+                    "narration": "",
+                    "speech_start": 0,
+                    "speech_end": 0,
+                })
+
+            # Stage 5: Assemble
+            output_path = os.path.join(ar_dir, "output.mp4")
+            assemble_final_video(
+                clips=all_clips,
+                work_dir=ar_dir,
+                output_path=output_path,
+                add_music=job.add_music,
+                watermark=True,
+                music_style=job.music_style,
+                width=vid_width,
+                height=vid_height,
+                subtitle_margin_v=subtitle_mv,
+            )
+
+            # Upload to R2
+            # First aspect ratio → output.mp4 (primary), others → output_9x16.mp4 etc.
+            if ar_idx == 0:
+                r2_key = f"videos/{job.user_id}/{job.video_id}/output.mp4"
+            else:
+                r2_key = f"videos/{job.user_id}/{job.video_id}/output_{ar_suffix}.mp4"
+
+            logger.info(f"Uploading {ar_name} output to R2: {r2_key}")
+            r2.upload_file(
+                output_path,
+                settings.r2_bucket_name,
+                r2_key,
+                ExtraArgs={"ContentType": "video/mp4"},
+            )
+            r2_keys[ar_name] = r2_key
+
+            # Track primary output (first aspect ratio)
+            if ar_idx == 0:
+                primary_output = output_path
+                primary_duration = get_video_duration(output_path)
+
+        # Use primary output for result and thumbnail
+        result.output_r2_key = r2_keys.get(aspect_ratios[0])
+        result.duration_seconds = primary_duration
+
+        # Generate thumbnail GIF from primary output
         try:
             gif_path = os.path.join(work_dir, "thumbnail.gif")
             gif_result = subprocess.run(
                 [
                     "ffmpeg", "-y",
                     "-t", "3",
-                    "-i", output_path,
+                    "-i", primary_output,
                     "-filter_complex",
                     "fps=10,scale=640:-1:flags=lanczos,split[v1][v2];[v1]palettegen[p];[v2][p]paletteuse",
                     gif_path,
@@ -1410,8 +1431,8 @@ def run_pipeline(job: VideoJob) -> PipelineResult:
             job.video_id,
             "done",
             "Video ready",
-            r2Key=r2_key,
-            durationSeconds=duration,
+            r2Key=result.output_r2_key,
+            durationSeconds=primary_duration,
             thumbnailGifKey=gif_r2_key,
         )
 

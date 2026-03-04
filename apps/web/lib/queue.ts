@@ -41,7 +41,7 @@ export interface VideoJob {
   tone: string;
   voiceId: string;
   musicStyle: string;
-  aspectRatio: string;
+  aspectRatios: string[];
   imageKeys: string[];
   autoSort: boolean;
   addMusic: boolean;
