@@ -816,6 +816,67 @@ def generate_ai_video_runway(
         return False
 
 
+def generate_ai_video_fal(
+    image_url: str,
+    room_label: str,
+    output_path: str,
+    model: str | None = None,
+    duration: int | None = None,
+) -> bool:
+    """Generate a video clip from a still image using Fal.ai (Wan 2.6, Kling 3.0 Turbo, etc.)."""
+    try:
+        import fal_client
+    except ImportError:
+        logger.warning("fal_client package not installed, falling back to Ken Burns")
+        return False
+
+    if not settings.fal_api_key:
+        return False
+
+    os.environ.setdefault("FAL_KEY", settings.fal_api_key)
+
+    model = model or settings.fal_standard_model
+    duration = duration or settings.fal_standard_duration
+
+    motion_prompt = AI_MOTION_PROMPTS.get(room_label.lower(), AI_MOTION_PROMPTS["other"])
+    prompt = f"Real estate property photo. {motion_prompt}. Photorealistic, steady smooth camera, no distortion, no morphing."
+
+    try:
+        handler = fal_client.submit(
+            model,
+            arguments={
+                "image_url": image_url,
+                "prompt": prompt,
+                "duration": duration,
+            },
+        )
+        result = handler.get()
+
+        video_url = None
+        if isinstance(result, dict):
+            video_data = result.get("video") or result.get("output")
+            if isinstance(video_data, dict):
+                video_url = video_data.get("url")
+            elif isinstance(video_data, str):
+                video_url = video_data
+
+        if not video_url:
+            logger.warning(f"Fal.ai returned no video URL: {result}")
+            return False
+
+        response = httpx.get(video_url, timeout=120, follow_redirects=True)
+        response.raise_for_status()
+        with open(output_path, "wb") as f:
+            f.write(response.content)
+
+        logger.info(f"Fal.ai video generated ({model}): {output_path}")
+        return True
+
+    except Exception as e:
+        logger.warning(f"Fal.ai video generation failed: {e}")
+        return False
+
+
 def generate_ai_video_clip(
     r2_client,
     image_path: str,
@@ -823,6 +884,7 @@ def generate_ai_video_clip(
     video_id: str,
     clip_idx: int,
     output_path: str,
+    total_clips: int = 0,
 ) -> bool:
     """
     Generate an AI video clip from a still image.
@@ -839,8 +901,120 @@ def generate_ai_video_clip(
         return generate_ai_video_luma(image_url, room_label, output_path)
     elif provider == "runway":
         return generate_ai_video_runway(image_url, room_label, output_path)
+    elif provider == "fal":
+        # Hero shots (first/last) get the premium model + longer duration
+        is_hero = (clip_idx == 0 or clip_idx == total_clips - 1) and total_clips > 2
+        model = settings.fal_hero_model if is_hero else settings.fal_standard_model
+        duration = settings.fal_hero_duration if is_hero else settings.fal_standard_duration
+        shot_type = "hero" if is_hero else "standard"
+        logger.info(f"Clip {clip_idx}: Fal.ai {shot_type} shot — {model}, {duration}s")
+        return generate_ai_video_fal(image_url, room_label, output_path, model=model, duration=duration)
     else:
         logger.warning(f"Unknown video gen provider: {provider}")
+        return False
+
+
+def stretch_ai_clip(
+    ai_video_path: str,
+    target_duration: float,
+    output_path: str,
+    width: int = 1920,
+    height: int = 1080,
+    fps: int = 24,
+) -> bool:
+    """
+    Stretch a short AI-generated clip to target_duration by extracting the last
+    frame and appending a gentle Ken Burns push-in hold. The AI portion plays
+    normally, then the last frame is held with a slow zoom for the remainder.
+    """
+    # Get actual AI clip duration
+    try:
+        probe = subprocess.run(
+            ["ffprobe", "-v", "quiet", "-print_format", "json", "-show_format", ai_video_path],
+            capture_output=True, text=True,
+        )
+        ai_duration = float(json.loads(probe.stdout)["format"]["duration"])
+    except Exception:
+        logger.warning("Could not probe AI clip duration, skipping stretch")
+        return False
+
+    if ai_duration >= target_duration - 0.1:
+        # Already long enough, just copy
+        shutil.copy2(ai_video_path, output_path)
+        return True
+
+    hold_duration = target_duration - ai_duration
+    work_dir = os.path.dirname(output_path)
+    last_frame_path = os.path.join(work_dir, f"lastframe_{os.path.basename(ai_video_path)}.jpg")
+    hold_path = os.path.join(work_dir, f"hold_{os.path.basename(ai_video_path)}.mp4")
+
+    # Extract last frame from AI clip
+    try:
+        subprocess.run(
+            [
+                "ffmpeg", "-y", "-sseof", "-0.1", "-i", ai_video_path,
+                "-frames:v", "1", "-q:v", "2", last_frame_path,
+            ],
+            capture_output=True, check=True,
+        )
+    except subprocess.CalledProcessError:
+        logger.warning("Failed to extract last frame for stretch")
+        return False
+
+    # Generate hold segment: slow Ken Burns push-in on last frame
+    total_hold_frames = max(int(hold_duration * fps), 1)
+    # Gentle 3% zoom over the hold duration
+    zoom_start = 1.0
+    zoom_end = 1.03
+    vf = (
+        f"loop={total_hold_frames}:size=1:start=0,"
+        f"fps={fps},"
+        f"scale=8000:-1:flags=lanczos,"
+        f"zoompan=z='lerp({zoom_start},{zoom_end},(on/{total_hold_frames}))':"
+        f"d={total_hold_frames}:s={width}x{height}:fps={fps},"
+        f"fade=t=in:st=0:d=0.3"
+    )
+
+    try:
+        subprocess.run(
+            [
+                "ffmpeg", "-y",
+                "-i", last_frame_path,
+                "-vf", vf,
+                "-f", "lavfi", "-i", f"anullsrc=r=44100:cl=stereo:d={hold_duration}",
+                "-c:v", "libx264", "-preset", "fast", "-crf", "18",
+                "-c:a", "aac", "-b:a", "128k",
+                "-t", f"{hold_duration:.3f}",
+                "-pix_fmt", "yuv420p",
+                hold_path,
+            ],
+            capture_output=True, check=True,
+        )
+    except subprocess.CalledProcessError as e:
+        logger.warning(f"Failed to render hold segment: {e.stderr[:500] if e.stderr else e}")
+        return False
+
+    # Concatenate AI clip + hold segment
+    concat_list = os.path.join(work_dir, f"concat_{os.path.basename(output_path)}.txt")
+    with open(concat_list, "w") as f:
+        f.write(f"file '{ai_video_path}'\n")
+        f.write(f"file '{hold_path}'\n")
+
+    try:
+        subprocess.run(
+            [
+                "ffmpeg", "-y", "-f", "concat", "-safe", "0", "-i", concat_list,
+                "-c:v", "libx264", "-preset", "fast", "-crf", "18",
+                "-c:a", "aac", "-b:a", "128k",
+                "-pix_fmt", "yuv420p",
+                output_path,
+            ],
+            capture_output=True, check=True,
+        )
+        logger.info(f"Stretched AI clip {ai_duration:.1f}s → {target_duration:.1f}s: {output_path}")
+        return True
+    except subprocess.CalledProcessError as e:
+        logger.warning(f"Failed to concatenate stretch: {e.stderr[:500] if e.stderr else e}")
         return False
 
 
@@ -1178,11 +1352,21 @@ def render_all_clips(
                 video_id=video_id or "unknown",
                 clip_idx=i,
                 output_path=ai_raw_path,
+                total_clips=n,
             )
             if ai_success:
-                # Composite narration audio onto the AI-generated video
+                # Hybrid timeline: if the AI clip is shorter than the narration
+                # duration, stretch it by holding the last frame with Ken Burns.
+                video_for_composite = ai_raw_path
+                if settings.hybrid_timeline:
+                    target = settings.hybrid_stretch_total if settings.hybrid_stretch_total > 0 else clip["clip_duration"]
+                    stretched_path = os.path.join(work_dir, f"ai_stretched_{i:03d}.mp4")
+                    if stretch_ai_clip(ai_raw_path, target, stretched_path, width, height, settings.video_fps):
+                        video_for_composite = stretched_path
+
+                # Composite narration audio onto the (possibly stretched) AI video
                 composite_audio_on_video(
-                    video_path=ai_raw_path,
+                    video_path=video_for_composite,
                     audio_path=clip["audio_path"],
                     clip_duration=clip["clip_duration"],
                     output_path=clip_path,
@@ -1873,7 +2057,10 @@ def run_pipeline(job: VideoJob) -> PipelineResult:
         # "standard" forces Ken Burns regardless of server default.
         if job.video_quality == "ai" and settings.video_gen_provider == "ken_burns":
             # User requested AI but server default is ken_burns — check if any API key is available
-            if settings.lumaai_api_key:
+            # Prefer fal (cheapest), then luma, then runway
+            if settings.fal_api_key:
+                settings.video_gen_provider = "fal"
+            elif settings.lumaai_api_key:
                 settings.video_gen_provider = "luma"
             elif settings.runway_api_key:
                 settings.video_gen_provider = "runway"

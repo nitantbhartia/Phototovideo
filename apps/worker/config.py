@@ -27,7 +27,7 @@ class Settings(BaseSettings):
     openai_tts_model: str = "gpt-4o-mini-tts"
     openai_tts_voice: str = "coral"  # alloy, ash, ballad, coral, echo, fable, onyx, nova, sage, shimmer
 
-    # AI video generation: "luma", "runway", or "ken_burns" (free, no API)
+    # AI video generation: "luma", "runway", "fal", or "ken_burns" (free, no API)
     video_gen_provider: str = "luma"
     lumaai_api_key: str | None = None
     lumaai_model: str = "ray-2"  # "ray-2" for higher quality, "ray-flash-2" for speed
@@ -36,6 +36,17 @@ class Settings(BaseSettings):
     runway_model: str = "gen4_turbo"  # "gen3a_turbo" for cheaper
     video_gen_duration: str = "5s"  # AI video clip duration
     max_video_gen_workers: int = 3  # parallel AI video gen API calls
+
+    # Fal.ai — budget-friendly AI video generation
+    fal_api_key: str | None = None
+    fal_hero_model: str = "fal-ai/kling-video/v3/pro/image-to-video"  # ~$0.10/sec — hero shots
+    fal_standard_model: str = "fal-ai/wan/v2.6/image-to-video"  # ~$0.05/sec — standard shots
+    fal_hero_duration: int = 5  # seconds for first/last photo (hero shots)
+    fal_standard_duration: int = 3  # seconds for interior shots (stretched via FFmpeg)
+
+    # Hybrid timeline: stretch short AI clips with Ken Burns hold on last frame
+    hybrid_timeline: bool = True  # when True, AI clips are extended with still-frame hold
+    hybrid_stretch_total: float = 0.0  # target total clip duration; 0 = use narration-based duration
 
     # Video settings
     video_width: int = 1920
