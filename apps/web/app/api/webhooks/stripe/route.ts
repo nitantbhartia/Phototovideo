@@ -5,7 +5,7 @@ import { users, videos, transactions } from "@/lib/db/schema";
 import { eq } from "drizzle-orm";
 import type Stripe from "stripe";
 
-export const config = { api: { bodyParser: false } };
+export const runtime = "nodejs";
 
 export async function POST(req: NextRequest) {
   const body = await req.text();
