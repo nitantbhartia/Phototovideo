@@ -9,6 +9,7 @@ Runs on Railway. Executes 5 sequential stages:
 """
 
 import os
+import re
 import json
 import base64
 import logging
@@ -374,25 +375,27 @@ def generate_narrations(
     property_type: str,
     tone: str,
 ) -> list[dict]:
-    """Generate 1-3 sentence narration for each clip."""
+    """Generate flowing narration script for the listing video."""
     logger.info(f"Generating narrations for {len(clips)} clips...")
 
     tone_desc = TONE_PROMPTS.get(tone, TONE_PROMPTS["Warm & Inviting"])
 
-    prompt = f"""Write professional real estate narration for a listing video of {address} ({property_type}).
+    prompt = f"""Write a flowing narration script for a real estate listing video of {address} ({property_type}).
+The video has {len(clips)} scenes. Write the script as one continuous narrative — like a real narrator walking through the home.
 
 Tone: {tone_desc}
 
 Rules:
-- Image 1 MUST open with: "Welcome to [address]" then describe the first room
-- Last image MUST end with a call to action: "Schedule your showing today" or similar
-- Each narration is 1-3 sentences (max 35 words)
-- Be specific about what you see — mention materials, colors, architectural details
-- Never use generic filler phrases like "beautiful home" or "must-see property"
-- Keep total narration under 1,000 characters
+- Scene 1 MUST open with: "Welcome to [address]" then describe what you see
+- Last scene MUST close with a call to action like "Schedule your private showing today"
+- Each scene is 1-2 sentences (max 30 words per scene)
+- Use natural transitions between scenes: "Stepping inside...", "Just down the hall...", "Moving through to...", "Out back...", etc.
+- Be specific — mention materials, colors, finishes, architectural details you see in each photo
+- Never use generic filler like "beautiful home" or "stunning property"
+- The script should sound like one person naturally walking through and describing the home, not like reading a list of bullet points
 
 Return a JSON array with exactly {len(clips)} objects:
-[{{"image_index": 1, "narration": "Welcome to 123 Oak Street..."}}]
+[{{"image_index": 1, "narration": "Welcome to 123 Oak Street. ..."}}]
 
 Return ONLY the JSON array."""
 
@@ -421,47 +424,167 @@ def generate_audio(
     work_dir: str,
     voice_id: str = "rachel",
 ) -> list[dict]:
-    """Generate MP3 audio for each narration using ElevenLabs."""
-    logger.info("Generating voiceover audio...")
+    """
+    Generate voiceover as a single continuous track, then split into per-clip
+    segments using silence detection. This produces natural prosody and flow
+    instead of the robotic reset you get from per-clip TTS calls.
+    """
+    logger.info("Generating voiceover audio (full-track)...")
 
-    # Resolve voice preset to ElevenLabs voice ID
     voice_preset = VOICE_PRESETS.get(voice_id, VOICE_PRESETS["rachel"])
     eleven_voice_id = voice_preset["id"]
 
+    # Build a single script with SSML-style pause markers between clips.
+    # ElevenLabs supports "..." for natural pauses — we use a triple-period
+    # sentence break which produces ~1-1.5s of silence between segments.
+    separator = " ... ... "
+    full_script = separator.join(clip["narration"] for clip in clips)
+
+    full_audio_path = os.path.join(work_dir, "full_narration.mp3")
+
+    audio_bytes = eleven.generate(
+        text=full_script,
+        voice=eleven_voice_id,
+        model=settings.elevenlabs_model,
+        voice_settings=VoiceSettings(
+            stability=0.45,
+            similarity_boost=0.75,
+            style=0.35,
+            use_speaker_boost=True,
+        ),
+    )
+
+    with open(full_audio_path, "wb") as f:
+        for chunk in audio_bytes:
+            f.write(chunk)
+
+    total_duration_ms = get_audio_duration_ms(full_audio_path)
+    logger.info(f"Full narration track: {total_duration_ms}ms")
+
+    # Detect silences to find clip boundaries
+    split_points = detect_silence_boundaries(full_audio_path, len(clips))
+
+    # Split into per-clip audio files
     for i, clip in enumerate(clips):
         audio_path = os.path.join(work_dir, f"audio_{i:03d}.mp3")
+        start_ms = split_points[i]
+        end_ms = split_points[i + 1] if i + 1 < len(split_points) else total_duration_ms
 
-        audio_bytes = eleven.generate(
-            text=clip["narration"],
-            voice=eleven_voice_id,
-            model=settings.elevenlabs_model,
-            voice_settings=VoiceSettings(
-                stability=0.65,
-                similarity_boost=0.80,
-                style=0.0,
-                use_speaker_boost=True,
-            ),
-        )
+        # Trim segment from full track
+        start_s = start_ms / 1000
+        duration_s = (end_ms - start_ms) / 1000
 
-        with open(audio_path, "wb") as f:
-            for chunk in audio_bytes:
-                f.write(chunk)
+        cmd = [
+            "ffmpeg", "-y",
+            "-i", full_audio_path,
+            "-ss", f"{start_s:.3f}",
+            "-t", f"{duration_s:.3f}",
+            "-c:a", "libmp3lame", "-b:a", "192k",
+            audio_path,
+        ]
+        result = subprocess.run(cmd, capture_output=True, text=True)
+        if result.returncode != 0:
+            logger.warning(f"Audio split failed for clip {i}, falling back to per-clip TTS")
+            audio_path = _generate_single_clip_audio(
+                eleven, clip["narration"], eleven_voice_id, audio_path
+            )
 
-        # Get audio duration using ffprobe
-        duration_ms = get_audio_duration_ms(audio_path)
+        segment_duration_ms = get_audio_duration_ms(audio_path)
         clip["audio_path"] = audio_path
-        clip["audio_duration_ms"] = duration_ms
+        clip["audio_duration_ms"] = segment_duration_ms
         clip["speech_start"] = settings.narration_lead_in
-        clip["speech_end"] = settings.narration_lead_in + duration_ms / 1000
+        clip["speech_end"] = settings.narration_lead_in + segment_duration_ms / 1000
         clip["clip_duration"] = max(
             settings.clip_min_duration,
             min(
                 settings.clip_max_duration,
-                settings.narration_lead_in + duration_ms / 1000 + settings.narration_lead_out,
+                settings.narration_lead_in + segment_duration_ms / 1000 + settings.narration_lead_out,
             ),
         )
 
     return clips
+
+
+def detect_silence_boundaries(audio_path: str, num_clips: int) -> list[int]:
+    """
+    Use ffmpeg silencedetect to find pause boundaries in the full narration.
+    Returns a list of timestamps (ms) marking the start of each clip segment.
+    """
+    # Detect silences >= 0.4s at -30dB threshold
+    cmd = [
+        "ffmpeg", "-i", audio_path,
+        "-af", "silencedetect=noise=-30dB:d=0.4",
+        "-f", "null", "-",
+    ]
+    result = subprocess.run(cmd, capture_output=True, text=True)
+    stderr = result.stderr
+
+    # Parse silence_end timestamps from ffmpeg output
+    silence_ends = []
+    silence_starts = []
+    for line in stderr.split("\n"):
+        end_match = re.search(r"silence_end:\s*([\d.]+)", line)
+        if end_match:
+            silence_ends.append(float(end_match.group(1)))
+        start_match = re.search(r"silence_start:\s*([\d.]+)", line)
+        if start_match:
+            silence_starts.append(float(start_match.group(1)))
+
+    # We need (num_clips - 1) boundaries. Use the midpoint of each silence gap.
+    boundaries = []
+    for i in range(min(len(silence_starts), len(silence_ends))):
+        midpoint = (silence_starts[i] + silence_ends[i]) / 2
+        boundaries.append(midpoint)
+
+    # If we got more boundaries than needed, keep the longest silences
+    # (those are the real inter-clip pauses, not intra-sentence pauses)
+    if len(boundaries) > num_clips - 1:
+        # Score each boundary by its silence duration
+        scored = []
+        for i in range(min(len(silence_starts), len(silence_ends))):
+            duration = silence_ends[i] - silence_starts[i]
+            midpoint = (silence_starts[i] + silence_ends[i]) / 2
+            scored.append((duration, midpoint))
+        # Keep the (num_clips - 1) longest silences, sorted by time
+        scored.sort(key=lambda x: x[0], reverse=True)
+        boundaries = sorted(
+            [s[1] for s in scored[: num_clips - 1]]
+        )
+
+    # If we got fewer boundaries than needed, distribute evenly
+    if len(boundaries) < num_clips - 1:
+        total_ms = get_audio_duration_ms(audio_path)
+        total_s = total_ms / 1000
+        segment_len = total_s / num_clips
+        boundaries = [segment_len * (i + 1) for i in range(num_clips - 1)]
+
+    # Convert to ms and prepend 0 (start of first clip)
+    split_points = [0] + [int(b * 1000) for b in boundaries]
+    return split_points
+
+
+def _generate_single_clip_audio(
+    eleven: ElevenLabs,
+    narration: str,
+    voice_id: str,
+    output_path: str,
+) -> str:
+    """Fallback: generate audio for a single clip if splitting fails."""
+    audio_bytes = eleven.generate(
+        text=narration,
+        voice=voice_id,
+        model=settings.elevenlabs_model,
+        voice_settings=VoiceSettings(
+            stability=0.45,
+            similarity_boost=0.75,
+            style=0.35,
+            use_speaker_boost=True,
+        ),
+    )
+    with open(output_path, "wb") as f:
+        for chunk in audio_bytes:
+            f.write(chunk)
+    return output_path
 
 
 def get_audio_duration_ms(audio_path: str) -> int:
