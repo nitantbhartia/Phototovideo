@@ -1,14 +1,37 @@
 import { Client as QStashClient } from "@upstash/qstash";
 import { Redis } from "@upstash/redis";
 
-export const redis = new Redis({
-  url: process.env.UPSTASH_REDIS_URL!,
-  token: process.env.UPSTASH_REDIS_TOKEN!,
-});
+let redisInstance: Redis | null = null;
+let qstashInstance: QStashClient | null = null;
 
-export const qstash = new QStashClient({
-  token: process.env.QSTASH_TOKEN!,
-});
+function getRedis() {
+  if (redisInstance) {
+    return redisInstance;
+  }
+
+  const url = process.env.UPSTASH_REDIS_URL;
+  const token = process.env.UPSTASH_REDIS_TOKEN;
+  if (!url || !token) {
+    throw new Error("Upstash Redis is not configured");
+  }
+
+  redisInstance = new Redis({ url, token });
+  return redisInstance;
+}
+
+function getQStash() {
+  if (qstashInstance) {
+    return qstashInstance;
+  }
+
+  const token = process.env.QSTASH_TOKEN;
+  if (!token) {
+    throw new Error("QSTASH_TOKEN is not configured");
+  }
+
+  qstashInstance = new QStashClient({ token });
+  return qstashInstance;
+}
 
 export interface VideoJob {
   videoId: string;
@@ -22,6 +45,7 @@ export interface VideoJob {
 }
 
 export async function dispatchVideoJob(job: VideoJob): Promise<string> {
+  const qstash = getQStash();
   const workerUrl = `${process.env.WORKER_URL}/process`;
 
   const response = await qstash.publishJSON({
@@ -41,6 +65,7 @@ export async function setVideoStatus(
   status: string,
   message?: string
 ): Promise<void> {
+  const redis = getRedis();
   await redis.hset(`video:${videoId}`, {
     status,
     message: message || "",
@@ -53,6 +78,7 @@ export async function getVideoStatus(videoId: string): Promise<{
   message: string;
   updatedAt: number;
 } | null> {
+  const redis = getRedis();
   const data = await redis.hgetall(`video:${videoId}`);
   if (!data) return null;
   return data as { status: string; message: string; updatedAt: number };

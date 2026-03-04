@@ -1,9 +1,23 @@
 import Stripe from "stripe";
 
-export const stripe = new Stripe(process.env.STRIPE_SECRET_KEY!, {
-  apiVersion: "2024-04-10",
-  typescript: true,
-});
+let stripeInstance: Stripe | null = null;
+
+export function getStripe() {
+  if (stripeInstance) {
+    return stripeInstance;
+  }
+
+  const secretKey = process.env.STRIPE_SECRET_KEY;
+  if (!secretKey) {
+    throw new Error("STRIPE_SECRET_KEY is not configured");
+  }
+
+  stripeInstance = new Stripe(secretKey, {
+    apiVersion: "2024-04-10",
+    typescript: true,
+  });
+  return stripeInstance;
+}
 
 export const PLANS = {
   PAY_PER_VIDEO: {
@@ -43,6 +57,7 @@ export async function createCheckoutSession({
 }): Promise<string> {
   const planConfig = PLANS[plan];
   const isSubscription = plan === "STARTER" || plan === "PRO";
+  const stripe = getStripe();
 
   const session = await stripe.checkout.sessions.create({
     customer_email: userEmail,
@@ -70,6 +85,7 @@ export async function createCustomerPortalSession(
   stripeCustomerId: string,
   returnUrl: string
 ): Promise<string> {
+  const stripe = getStripe();
   const session = await stripe.billingPortal.sessions.create({
     customer: stripeCustomerId,
     return_url: returnUrl,

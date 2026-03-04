@@ -1,6 +1,20 @@
 import { Resend } from "resend";
 
-const resend = new Resend(process.env.RESEND_API_KEY);
+let resendInstance: Resend | null = null;
+
+function getResend() {
+  if (resendInstance) {
+    return resendInstance;
+  }
+
+  const apiKey = process.env.RESEND_API_KEY;
+  if (!apiKey) {
+    throw new Error("RESEND_API_KEY is not configured");
+  }
+
+  resendInstance = new Resend(apiKey);
+  return resendInstance;
+}
 
 export async function sendVideoReadyEmail({
   to,
@@ -13,6 +27,7 @@ export async function sendVideoReadyEmail({
   address: string;
   videoUrl: string;
 }): Promise<void> {
+  const resend = getResend();
   await resend.emails.send({
     from: process.env.EMAIL_FROM!,
     to,
@@ -64,6 +79,7 @@ export async function sendVideoErrorEmail({
   name: string;
   address: string;
 }): Promise<void> {
+  const resend = getResend();
   await resend.emails.send({
     from: process.env.EMAIL_FROM!,
     to,

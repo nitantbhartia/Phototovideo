@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import { auth } from "@clerk/nextjs/server";
-import { db } from "@/lib/db";
+import { getDb } from "@/lib/db";
 import { videos, users } from "@/lib/db/schema";
 import { eq } from "drizzle-orm";
 import { generatePresignedDownloadUrl } from "@/lib/r2";
@@ -12,6 +12,7 @@ interface Params {
 
 export async function GET(req: NextRequest, { params }: Params) {
   try {
+    const db = getDb();
     const { userId: clerkId } = auth();
 
     const video = await db.query.videos.findFirst({
@@ -72,6 +73,7 @@ export async function GET(req: NextRequest, { params }: Params) {
 
 export async function DELETE(req: NextRequest, { params }: Params) {
   try {
+    const db = getDb();
     const { userId: clerkId } = auth();
     if (!clerkId) {
       return NextResponse.json({ error: "Unauthorized" }, { status: 401 });

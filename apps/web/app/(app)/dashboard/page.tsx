@@ -1,6 +1,6 @@
 import Link from "next/link";
 import { currentUser } from "@clerk/nextjs/server";
-import { db } from "@/lib/db";
+import { getDb } from "@/lib/db";
 import { videos, users } from "@/lib/db/schema";
 import { eq, desc } from "drizzle-orm";
 import { Button } from "@/components/ui/button";
@@ -21,8 +21,10 @@ import { getPublicUrl } from "@/lib/r2";
 import { formatDuration } from "@/lib/utils";
 
 export const metadata = { title: "Dashboard" };
+export const dynamic = "force-dynamic";
 
 export default async function DashboardPage() {
+  const db = getDb();
   const clerkUser = await currentUser();
   if (!clerkUser) return null;
 

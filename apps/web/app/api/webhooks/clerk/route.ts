@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import { Webhook } from "svix";
-import { db } from "@/lib/db";
+import { getDb } from "@/lib/db";
 import { users } from "@/lib/db/schema";
 import { eq } from "drizzle-orm";
 
@@ -20,6 +20,7 @@ interface ClerkWebhookEvent {
 }
 
 export async function POST(req: NextRequest) {
+  const db = getDb();
   const WEBHOOK_SECRET = process.env.CLERK_WEBHOOK_SECRET;
 
   if (!WEBHOOK_SECRET) {

@@ -3,6 +3,8 @@ import { auth, currentUser } from "@clerk/nextjs/server";
 import { createCheckoutSession, PLANS } from "@/lib/stripe";
 import { absoluteUrl } from "@/lib/utils";
 
+export const dynamic = "force-dynamic";
+
 export async function GET(req: NextRequest) {
   try {
     const { userId: clerkId } = auth();

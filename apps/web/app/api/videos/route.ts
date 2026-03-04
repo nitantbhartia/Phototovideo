@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import { auth } from "@clerk/nextjs/server";
-import { db } from "@/lib/db";
+import { getDb } from "@/lib/db";
 import { videos, users, videoClips } from "@/lib/db/schema";
 import { eq, desc } from "drizzle-orm";
 import { dispatchVideoJob } from "@/lib/queue";
@@ -18,6 +18,7 @@ const CreateVideoSchema = z.object({
 
 export async function POST(req: NextRequest) {
   try {
+    const db = getDb();
     const { userId: clerkId } = auth();
     if (!clerkId) {
       return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
@@ -95,6 +96,7 @@ export async function POST(req: NextRequest) {
 
 export async function GET(req: NextRequest) {
   try {
+    const db = getDb();
     const { userId: clerkId } = auth();
     if (!clerkId) {
       return NextResponse.json({ error: "Unauthorized" }, { status: 401 });

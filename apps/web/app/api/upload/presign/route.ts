@@ -1,7 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { auth } from "@clerk/nextjs/server";
 import { generatePresignedUploadUrl, generateImageKey } from "@/lib/r2";
-import { db } from "@/lib/db";
+import { getDb } from "@/lib/db";
 import { videos, users, videoClips } from "@/lib/db/schema";
 import { eq } from "drizzle-orm";
 import { generateShareId } from "@/lib/utils";
@@ -23,6 +23,7 @@ const PresignSchema = z.object({
 
 export async function POST(req: NextRequest) {
   try {
+    const db = getDb();
     const { userId: clerkId } = auth();
     if (!clerkId) {
       return NextResponse.json({ error: "Unauthorized" }, { status: 401 });

@@ -1,5 +1,5 @@
 import { notFound } from "next/navigation";
-import { db } from "@/lib/db";
+import { getDb } from "@/lib/db";
 import { videos } from "@/lib/db/schema";
 import { eq, or } from "drizzle-orm";
 import { VideoPlayer } from "./video-player";
@@ -26,6 +26,7 @@ export async function generateMetadata({ params }: Props) {
 }
 
 async function getVideo(id: string) {
+  const db = getDb();
   return db.query.videos.findFirst({
     where: or(eq(videos.id, id), eq(videos.shareId, id)),
     with: { user: true },

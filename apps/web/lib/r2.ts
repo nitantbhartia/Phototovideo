@@ -6,24 +6,47 @@ import {
 } from "@aws-sdk/client-s3";
 import { getSignedUrl } from "@aws-sdk/s3-request-presigner";
 
-export const r2Client = new S3Client({
-  region: "auto",
-  endpoint: `https://${process.env.R2_ACCOUNT_ID}.r2.cloudflarestorage.com`,
-  credentials: {
-    accessKeyId: process.env.R2_ACCESS_KEY_ID!,
-    secretAccessKey: process.env.R2_SECRET_ACCESS_KEY!,
-  },
-});
+let r2ClientInstance: S3Client | null = null;
 
-const BUCKET = process.env.R2_BUCKET_NAME!;
+function getR2Client() {
+  if (r2ClientInstance) {
+    return r2ClientInstance;
+  }
+
+  const accountId = process.env.R2_ACCOUNT_ID;
+  const accessKeyId = process.env.R2_ACCESS_KEY_ID;
+  const secretAccessKey = process.env.R2_SECRET_ACCESS_KEY;
+  if (!accountId || !accessKeyId || !secretAccessKey) {
+    throw new Error("R2 client is not configured");
+  }
+
+  r2ClientInstance = new S3Client({
+    region: "auto",
+    endpoint: `https://${accountId}.r2.cloudflarestorage.com`,
+    credentials: {
+      accessKeyId,
+      secretAccessKey,
+    },
+  });
+  return r2ClientInstance;
+}
+
+function getBucket() {
+  const bucket = process.env.R2_BUCKET_NAME;
+  if (!bucket) {
+    throw new Error("R2_BUCKET_NAME is not configured");
+  }
+  return bucket;
+}
 
 export async function generatePresignedUploadUrl(
   key: string,
   contentType: string,
   expiresIn = 300
 ): Promise<string> {
+  const r2Client = getR2Client();
   const command = new PutObjectCommand({
-    Bucket: BUCKET,
+    Bucket: getBucket(),
     Key: key,
     ContentType: contentType,
   });
@@ -34,8 +57,9 @@ export async function generatePresignedDownloadUrl(
   key: string,
   expiresIn = 3600
 ): Promise<string> {
+  const r2Client = getR2Client();
   const command = new GetObjectCommand({
-    Bucket: BUCKET,
+    Bucket: getBucket(),
     Key: key,
   });
   return getSignedUrl(r2Client, command, { expiresIn });
@@ -46,9 +70,10 @@ export function getPublicUrl(key: string): string {
 }
 
 export async function deleteObject(key: string): Promise<void> {
+  const r2Client = getR2Client();
   await r2Client.send(
     new DeleteObjectCommand({
-      Bucket: BUCKET,
+      Bucket: getBucket(),
       Key: key,
     })
   );

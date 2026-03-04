@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
-import { db } from "@/lib/db";
+import { getDb } from "@/lib/db";
 import { videos } from "@/lib/db/schema";
 import { eq } from "drizzle-orm";
 import { setVideoStatus } from "@/lib/queue";
@@ -23,6 +23,7 @@ export async function POST(req: NextRequest) {
   }
 
   try {
+    const db = getDb();
     const body = await req.json();
     const parsed = StatusUpdateSchema.safeParse(body);
     if (!parsed.success) {

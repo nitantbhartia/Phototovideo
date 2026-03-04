@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
-import { stripe, PLANS } from "@/lib/stripe";
-import { db } from "@/lib/db";
+import { getStripe, PLANS } from "@/lib/stripe";
+import { getDb } from "@/lib/db";
 import { users, videos, transactions } from "@/lib/db/schema";
 import { eq } from "drizzle-orm";
 import type Stripe from "stripe";
@@ -17,7 +17,7 @@ export async function POST(req: NextRequest) {
 
   let event: Stripe.Event;
   try {
-    event = stripe.webhooks.constructEvent(
+    event = getStripe().webhooks.constructEvent(
       body,
       sig,
       process.env.STRIPE_WEBHOOK_SECRET!
@@ -55,6 +55,7 @@ export async function POST(req: NextRequest) {
 }
 
 async function handleCheckoutCompleted(session: Stripe.Checkout.Session) {
+  const db = getDb();
   const { userId, videoId, plan } = session.metadata || {};
   if (!userId || !plan) return;
 
@@ -110,6 +111,7 @@ async function handleCheckoutCompleted(session: Stripe.Checkout.Session) {
 }
 
 async function handleSubscriptionUpdate(subscription: Stripe.Subscription) {
+  const db = getDb();
   const customerId =
     typeof subscription.customer === "string" ? subscription.customer : null;
   if (!customerId) return;
@@ -143,6 +145,7 @@ async function handleSubscriptionUpdate(subscription: Stripe.Subscription) {
 }
 
 async function handleSubscriptionCancelled(subscription: Stripe.Subscription) {
+  const db = getDb();
   const customerId =
     typeof subscription.customer === "string" ? subscription.customer : null;
   if (!customerId) return;
