@@ -39,7 +39,7 @@ export default function PricingPage() {
           <CardContent className="p-8">
             <div className="text-center mb-8">
               <div className="flex items-baseline justify-center gap-1">
-                <span className="font-serif text-5xl font-bold text-charcoal">
+                <span className="font-serif text-3xl sm:text-4xl md:text-5xl font-bold text-charcoal">
                   $49
                 </span>
                 <span className="text-charcoal-600 text-sm">
@@ -67,7 +67,7 @@ export default function PricingPage() {
             </Button>
 
             <p className="text-xs text-charcoal-600/60 text-center mt-4">
-              Preview with watermark for free. Pay only when you're happy.
+              Preview with watermark for free. Pay only when you&apos;re happy.
             </p>
           </CardContent>
         </Card>

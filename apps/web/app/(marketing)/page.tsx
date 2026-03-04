@@ -153,7 +153,7 @@ export default function LandingPage() {
           </p>
           <div className="flex flex-col sm:flex-row gap-4 justify-center">
             <Button asChild size="lg">
-              <Link href="/pricing">See All Plans</Link>
+              <Link href="/pricing">See Pricing</Link>
             </Button>
             <Button asChild variant="outline" size="lg" className="border-cream-200/30 text-cream-100 hover:bg-cream-100/10">
               <Link href="/generate">Start for $49</Link>

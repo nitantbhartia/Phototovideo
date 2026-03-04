@@ -57,11 +57,7 @@ export default async function DashboardPage() {
             Welcome back, {clerkUser.firstName}
           </h1>
           <p className="text-charcoal-600 mt-1">
-            {user?.credits !== undefined && user.credits >= 0
-              ? `${user.credits} video${user.credits !== 1 ? "s" : ""} remaining`
-              : user?.plan === "pro"
-              ? "Unlimited videos (Pro)"
-              : "No credits — purchase to generate videos"}
+            {completedCount} video{completedCount !== 1 ? "s" : ""} generated &middot; $49 per listing
           </p>
         </div>
         <Button asChild>
@@ -73,7 +69,7 @@ export default async function DashboardPage() {
       </div>
 
       {/* Stats */}
-      <div className="grid grid-cols-2 md:grid-cols-4 gap-4 mb-8">
+      <div className="grid grid-cols-3 gap-4 mb-8">
         <StatCard
           label="Total Videos"
           value={userVideos.length}
@@ -90,12 +86,6 @@ export default async function DashboardPage() {
           value={processingCount}
           icon={Clock}
           iconColor="text-blue-600"
-        />
-        <StatCard
-          label="Credits Left"
-          value={user?.plan === "pro" ? "∞" : user?.credits ?? 0}
-          icon={AlertCircle}
-          iconColor="text-gold"
         />
       </div>
 

@@ -612,10 +612,10 @@ export function GenerateClient() {
           {reviewClips.map((clip, idx) => (
             <div
               key={`${clip.imageIndex}-${idx}`}
-              className="flex gap-4 p-4 border border-border rounded-xl bg-white"
+              className="flex flex-col sm:flex-row gap-4 p-4 border border-border rounded-xl bg-white"
             >
               {/* Reorder buttons */}
-              <div className="flex flex-col gap-1 justify-center">
+              <div className="flex flex-row sm:flex-col gap-1 items-center sm:justify-center order-1 sm:order-none">
                 <button
                   onClick={() => moveClip(idx, "up")}
                   disabled={idx === 0}
@@ -636,7 +636,7 @@ export function GenerateClient() {
               </div>
 
               {/* Photo thumbnail */}
-              <div className="relative w-24 h-24 flex-shrink-0">
+              <div className="relative w-full sm:w-24 h-40 sm:h-24 flex-shrink-0 order-first sm:order-none">
                 {clip.preview && (
                   <Image
                     src={clip.preview}
@@ -886,7 +886,7 @@ export function GenerateClient() {
           </span>
         </h2>
 
-        <div className="grid grid-cols-3 gap-3">
+        <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
           {ASPECT_RATIO_OPTIONS.map((ar) => {
             const isSelected = aspectRatios.includes(ar.value);
             return (
