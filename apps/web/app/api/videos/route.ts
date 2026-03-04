@@ -13,7 +13,7 @@ const CreateVideoSchema = z.object({
   tone: z.string().default("Warm & Inviting"),
   voiceId: z.string().default("rachel"),
   musicStyle: z.string().default("ambient"),
-  aspectRatio: z.enum(["16:9", "9:16", "1:1"]).default("16:9"),
+  aspectRatios: z.array(z.enum(["16:9", "9:16", "1:1"])).min(1).default(["16:9"]),
   imageKeys: z.array(z.string()).min(1).max(20),
   autoSort: z.boolean().default(true),
   addMusic: z.boolean().default(true),
@@ -42,7 +42,7 @@ export async function POST(req: NextRequest) {
       );
     }
 
-    const { videoId, address, propertyType, tone, voiceId, musicStyle, aspectRatio, imageKeys, autoSort, addMusic, editedClips } =
+    const { videoId, address, propertyType, tone, voiceId, musicStyle, aspectRatios, imageKeys, autoSort, addMusic, editedClips } =
       parsed.data;
 
     const user = await db.query.users.findFirst({
@@ -63,7 +63,7 @@ export async function POST(req: NextRequest) {
         tone,
         voiceId,
         musicStyle,
-        aspectRatio,
+        aspectRatios: aspectRatios.join(","),
         status: "queued",
         statusMessage: "Job queued",
         updatedAt: new Date(),
@@ -90,7 +90,7 @@ export async function POST(req: NextRequest) {
       tone,
       voiceId,
       musicStyle,
-      aspectRatio,
+      aspectRatios,
       imageKeys,
       autoSort,
       addMusic,

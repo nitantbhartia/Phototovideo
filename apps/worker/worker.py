@@ -45,7 +45,7 @@ class ProcessRequest(BaseModel):
     tone: str = "Warm & Inviting"
     voiceId: str = "rachel"
     musicStyle: str = "ambient"
-    aspectRatio: str = "16:9"
+    aspectRatios: list[str] = ["16:9"]
     imageKeys: list[str]
     autoSort: bool = True
     addMusic: bool = True

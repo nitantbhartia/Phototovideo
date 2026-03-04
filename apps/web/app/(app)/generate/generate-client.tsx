@@ -97,7 +97,7 @@ export function GenerateClient() {
   const [tone, setTone] = useState("Warm & Inviting");
   const [voiceId, setVoiceId] = useState("rachel");
   const [musicStyle, setMusicStyle] = useState("ambient");
-  const [aspectRatio, setAspectRatio] = useState("16:9");
+  const [aspectRatios, setAspectRatios] = useState<string[]>(["16:9"]);
   const [autoSort, setAutoSort] = useState(true);
   const [addMusic, setAddMusic] = useState(true);
   const [isUploading, setIsUploading] = useState(false);
@@ -286,7 +286,7 @@ export function GenerateClient() {
           tone,
           voiceId,
           musicStyle,
-          aspectRatio,
+          aspectRatios,
           imageKeys: keys,
           autoSort,
           addMusic,
@@ -807,16 +807,30 @@ export function GenerateClient() {
       <section className="mb-8">
         <h2 className="font-semibold text-charcoal mb-3 flex items-center gap-2">
           <Monitor className="h-4 w-4 text-gold" />
-          Aspect Ratio
+          Aspect Ratios
+          <span className="text-charcoal-600 font-normal text-sm">
+            (select one or more)
+          </span>
         </h2>
 
         <div className="grid grid-cols-3 gap-3">
-          {ASPECT_RATIO_OPTIONS.map((ar) => (
+          {ASPECT_RATIO_OPTIONS.map((ar) => {
+            const isSelected = aspectRatios.includes(ar.value);
+            return (
             <button
               key={ar.value}
-              onClick={() => setAspectRatio(ar.value)}
+              onClick={() => {
+                setAspectRatios((prev) => {
+                  if (prev.includes(ar.value)) {
+                    // Don't allow deselecting the last one
+                    if (prev.length <= 1) return prev;
+                    return prev.filter((v) => v !== ar.value);
+                  }
+                  return [...prev, ar.value];
+                });
+              }}
               className={`p-3 rounded-xl border-2 text-center transition-all ${
-                aspectRatio === ar.value
+                isSelected
                   ? "border-gold bg-gold/5"
                   : "border-border hover:border-gold/30"
               }`}
@@ -824,7 +838,7 @@ export function GenerateClient() {
               <div className="flex justify-center mb-2">
                 <div
                   className={`border-2 rounded-sm ${
-                    aspectRatio === ar.value
+                    isSelected
                       ? "border-gold bg-gold/20"
                       : "border-charcoal-600/30"
                   }`}
@@ -847,7 +861,8 @@ export function GenerateClient() {
               <p className="text-sm font-semibold text-charcoal">{ar.label}</p>
               <p className="text-[11px] text-charcoal-600">{ar.description}</p>
             </button>
-          ))}
+            );
+          })}
         </div>
       </section>
 

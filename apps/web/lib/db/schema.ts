@@ -48,7 +48,7 @@ export const videos = pgTable(
     tone: text("tone").default("Warm & Inviting"),
     voiceId: text("voice_id").default("rachel"),
     musicStyle: text("music_style").default("ambient"),
-    aspectRatio: text("aspect_ratio").default("16:9"),
+    aspectRatios: text("aspect_ratios").default("16:9"),
     status: videoStatusEnum("status").default("queued").notNull(),
     statusMessage: text("status_message"),
     r2Key: text("r2_key"),
