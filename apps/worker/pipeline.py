@@ -449,25 +449,45 @@ def render_clip(
     Render a single clip with Ken Burns effect, color grade, and audio.
     zoom_direction: "in" (slow zoom in) or "out" (slow zoom out)
     """
-    # Stable, aspect-preserving pan over a lightly overscanned frame.
     total_frames = max(int(clip_duration * fps), 1)
     progress_expr = f"(n/{max(total_frames - 1, 1)})"
-    x_bias = "0.08" if zoom_direction == "in" else "-0.08"
-    y_bias = "0.04" if zoom_direction == "in" else "-0.04"
+
+    # Scale to 120% of output to guarantee room for Ken Burns panning.
+    # The previous approach (force_original_aspect_ratio=increase at 1:1 target)
+    # left zero pan room on 16:9 sources, producing only micro-shake.
+    overscan_w = int(width * 1.20)
+    overscan_h = int(height * 1.20)
+
+    if zoom_direction == "in":
+        # Slow pan from upper-left toward lower-right
+        x_start, x_end = "0.15", "0.75"
+        y_start, y_end = "0.25", "0.65"
+    else:
+        # Slow pan from lower-right toward upper-left
+        x_start, x_end = "0.80", "0.25"
+        y_start, y_end = "0.70", "0.35"
+
+    x_expr = f"(iw-ow)*({x_start}+({x_end}-{x_start})*{progress_expr})"
+    y_expr = f"(ih-oh)*({y_start}+({y_end}-{y_start})*{progress_expr})"
+
+    # Fade in/out for smooth visual transitions between clips
+    fade_dur = 0.5
+    fade_out_start = max(clip_duration - fade_dur, 0)
 
     motion_filter = (
-        f"scale={width}:{height}:force_original_aspect_ratio=increase:flags=lanczos,"
-        f"crop={width}:{height}:"
-        f"x='(iw-ow)*0.5 + ((iw-ow)*{x_bias})*({progress_expr}-0.5)':"
-        f"y='(ih-oh)*0.5 + ((ih-oh)*{y_bias})*({progress_expr}-0.5)',"
+        f"scale={overscan_w}:{overscan_h}:force_original_aspect_ratio=increase:flags=lanczos,"
+        f"crop={width}:{height}:x='{x_expr}':y='{y_expr}',"
         f"fps={fps},trim=duration={clip_duration:.3f},setsar=1"
     )
 
-    # Keep the source look mostly intact. Prior grading was making the stills feel degraded.
     color_filter = "eq=brightness=0.005:contrast=1.01:saturation=1.03,unsharp=5:5:0.4:5:5:0.0"
 
-    # Full video filter chain
-    video_filter = f"{motion_filter},{color_filter}"
+    fade_filter = (
+        f"fade=t=in:st=0:d={fade_dur},"
+        f"fade=t=out:st={fade_out_start:.3f}:d={fade_dur}"
+    )
+
+    video_filter = f"{motion_filter},{color_filter},{fade_filter}"
     audio_delay_ms = int(settings.narration_lead_in * 1000)
     audio_filter = (
         f"adelay={audio_delay_ms}|{audio_delay_ms},"
@@ -547,10 +567,12 @@ def create_ass_file(clips: list[dict], ass_path: str, width: int = 1920, height:
             "ScaleX, ScaleY, Spacing, Angle, BorderStyle, Outline, Shadow, "
             "Alignment, MarginL, MarginR, MarginV, Encoding\n"
         )
-        # FontSize=32 at PlayResY=height → 32px; Alignment=2 = bottom-center; MarginV=50px
+        # Alignment=2 = bottom-center; BorderStyle=1 = outline+shadow (not opaque box)
+        fs = settings.subtitle_font_size
+        mv = settings.subtitle_margin_v
         f.write(
-            "Style: Default,Arial,32,&H00FFFFFF,&H000000FF,&H00000000,&H80000000,"
-            "0,0,0,0,100,100,0,0,3,2,1,2,30,30,50,1\n\n"
+            f"Style: Default,Arial,{fs},&H00FFFFFF,&H000000FF,&H00000000,&H80000000,"
+            f"0,0,0,0,100,100,0,0,1,3,1,2,30,30,{mv},1\n\n"
         )
         f.write("[Events]\n")
         f.write("Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text\n")
