@@ -531,11 +531,12 @@ def render_clip(
     )
 
     # Cinematic colour grade: warm highlights, lifted blacks, gentle saturation.
-    # curves adjusts the tone curve — lifts shadows (0/0.05) and rolls off
-    # highlights (1/0.95) for a filmic look. colorbalance pushes highlights
-    # warm (slight red/yellow shift). eq adds a touch of saturation.
+    # colorlevels lifts the black point to 5% and rolls off whites to 95%
+    # for a filmic look. colorbalance pushes highlights warm (slight
+    # red/yellow shift). eq adds saturation and a touch of contrast.
     color_filter = (
-        "curves=m='0/0.05 0.25/0.27 0.5/0.52 0.75/0.77 1/0.95',"
+        "colorlevels=rimin=0.05:gimin=0.05:bimin=0.05"
+        ":rimax=0.95:gimax=0.95:bimax=0.95,"
         "colorbalance=rh=0.03:gh=0.01:bh=-0.02,"
         "eq=saturation=1.08:contrast=1.02"
     )
