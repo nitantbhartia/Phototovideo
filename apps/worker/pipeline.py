@@ -452,11 +452,10 @@ def render_clip(
     total_frames = max(int(clip_duration * fps), 1)
     progress_expr = f"(n/{max(total_frames - 1, 1)})"
 
-    # Scale to 120% of output to guarantee room for Ken Burns panning.
-    # The previous approach (force_original_aspect_ratio=increase at 1:1 target)
-    # left zero pan room on 16:9 sources, producing only micro-shake.
-    overscan_w = int(width * 1.20)
-    overscan_h = int(height * 1.20)
+    # Scale to 110% of output to give room for Ken Burns panning while
+    # minimising upscale softness on lower-res sources (e.g. Zillow ~1024px).
+    overscan_w = int(width * 1.10)
+    overscan_h = int(height * 1.10)
 
     if zoom_direction == "in":
         # Slow pan from upper-left toward lower-right
@@ -480,7 +479,8 @@ def render_clip(
         f"fps={fps},trim=duration={clip_duration:.3f},setsar=1"
     )
 
-    color_filter = "eq=brightness=0.005:contrast=1.01:saturation=1.03,unsharp=5:5:0.4:5:5:0.0"
+    # Light colour grade only — no unsharp (amplifies JPEG artifacts on upscaled sources)
+    color_filter = "eq=brightness=0.005:contrast=1.01:saturation=1.03"
 
     fade_filter = (
         f"fade=t=in:st=0:d={fade_dur},"
