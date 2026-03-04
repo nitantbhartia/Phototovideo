@@ -47,8 +47,10 @@ export default async function VideoPage({ params }: Props) {
 
   const appUrl = process.env.NEXT_PUBLIC_APP_URL || "";
 
+  const showUnlockBanner = isOwner && video.status === "done" && !video.paid && videoUrl;
+
   return (
-    <div className="min-h-screen bg-charcoal">
+    <div className="min-h-screen bg-charcoal pb-24">
       {/* Branding bar */}
       <div className="bg-charcoal-900 px-6 py-3 flex items-center justify-between">
         <Link href="/" className="flex items-center gap-2">
@@ -160,6 +162,27 @@ export default async function VideoPage({ params }: Props) {
           </div>
         </div>
       </div>
+
+      {/* Sticky unlock banner */}
+      {showUnlockBanner && (
+        <div className="fixed bottom-0 inset-x-0 z-50 border-t border-gold/20 bg-charcoal-900/95 backdrop-blur-sm">
+          <div className="max-w-5xl mx-auto px-4 py-3 flex flex-col sm:flex-row items-center justify-between gap-3">
+            <div>
+              <p className="text-cream-50 font-semibold text-sm">
+                This is a watermarked preview
+              </p>
+              <p className="text-cream-200/60 text-xs">
+                Unlock to remove the watermark and download the full HD version — yours to keep forever.
+              </p>
+            </div>
+            <Button asChild className="shrink-0 bg-gold hover:bg-gold/90 text-charcoal font-bold px-6">
+              <a href={`/api/checkout?videoId=${video.id}&plan=PAY_PER_VIDEO`}>
+                Unlock for $49 →
+              </a>
+            </Button>
+          </div>
+        </div>
+      )}
     </div>
   );
 }

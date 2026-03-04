@@ -49,6 +49,7 @@ export const videos = pgTable(
     status: videoStatusEnum("status").default("queued").notNull(),
     statusMessage: text("status_message"),
     r2Key: text("r2_key"),
+    thumbnailGifKey: text("thumbnail_gif_key"),
     watermarked: boolean("watermarked").default(true).notNull(),
     durationSeconds: integer("duration_seconds"),
     errorMessage: text("error_message"),

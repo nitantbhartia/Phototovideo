@@ -776,12 +776,41 @@ def run_pipeline(job: VideoJob) -> PipelineResult:
         result.output_r2_key = r2_key
         result.duration_seconds = duration
 
+        # Generate 3-second animated GIF thumbnail for email
+        gif_r2_key = None
+        try:
+            gif_path = os.path.join(work_dir, "thumbnail.gif")
+            gif_result = subprocess.run(
+                [
+                    "ffmpeg", "-y",
+                    "-t", "3",
+                    "-i", output_path,
+                    "-filter_complex",
+                    "fps=10,scale=640:-1:flags=lanczos,split[v1][v2];[v1]palettegen[p];[v2][p]paletteuse",
+                    gif_path,
+                ],
+                capture_output=True,
+                text=True,
+            )
+            if gif_result.returncode == 0 and os.path.exists(gif_path):
+                gif_r2_key = f"videos/{job.user_id}/{job.video_id}/thumbnail.gif"
+                r2.upload_file(
+                    gif_path,
+                    settings.r2_bucket_name,
+                    gif_r2_key,
+                    ExtraArgs={"ContentType": "image/gif"},
+                )
+                logger.info(f"Thumbnail GIF uploaded: {gif_r2_key}")
+        except Exception as e:
+            logger.warning(f"GIF thumbnail generation failed (non-fatal): {e}")
+
         report_status(
             job.video_id,
             "done",
             "Video ready",
             r2Key=r2_key,
             durationSeconds=duration,
+            thumbnailGifKey=gif_r2_key,
         )
 
         return result

@@ -11,6 +11,7 @@ const StatusUpdateSchema = z.object({
   status: z.enum(["queued", "processing", "done", "error"]),
   statusMessage: z.string().optional(),
   r2Key: z.string().optional(),
+  thumbnailGifKey: z.string().nullable().optional(),
   durationSeconds: z.number().optional(),
   errorMessage: z.string().optional(),
 });
@@ -30,7 +31,7 @@ export async function POST(req: NextRequest) {
       return NextResponse.json({ error: "Invalid request" }, { status: 400 });
     }
 
-    const { videoId, status, statusMessage, r2Key, durationSeconds, errorMessage } =
+    const { videoId, status, statusMessage, r2Key, thumbnailGifKey, durationSeconds, errorMessage } =
       parsed.data;
 
     // Update Redis for real-time polling
@@ -44,6 +45,7 @@ export async function POST(req: NextRequest) {
     };
 
     if (r2Key) updateData.r2Key = r2Key;
+    if (thumbnailGifKey) updateData.thumbnailGifKey = thumbnailGifKey;
     if (durationSeconds) updateData.durationSeconds = durationSeconds;
     if (errorMessage) updateData.errorMessage = errorMessage;
 
@@ -59,11 +61,16 @@ export async function POST(req: NextRequest) {
       if (video?.user?.email) {
         const appUrl = process.env.NEXT_PUBLIC_APP_URL;
         if (status === "done") {
+          const gifUrl = video.thumbnailGifKey
+            ? `${process.env.R2_PUBLIC_URL}/${video.thumbnailGifKey}`
+            : undefined;
           await sendVideoReadyEmail({
             to: video.user.email,
             name: video.user.name || "there",
             address: video.address,
             videoUrl: `${appUrl}/video/${video.id}`,
+            unlockUrl: `${appUrl}/api/checkout?videoId=${video.id}&plan=PAY_PER_VIDEO`,
+            thumbnailGifUrl: gifUrl,
           }).catch(console.error);
         } else {
           await sendVideoErrorEmail({
