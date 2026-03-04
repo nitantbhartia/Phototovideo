@@ -17,6 +17,8 @@ const CreateVideoSchema = z.object({
   imageKeys: z.array(z.string()).min(1).max(20),
   autoSort: z.boolean().default(true),
   addMusic: z.boolean().default(true),
+  // Video quality: "ai" uses AI video generation (Luma/Runway), "standard" uses Ken Burns
+  videoQuality: z.enum(["ai", "standard"]).default("standard"),
   // Edit-before-render: pre-defined clip order and narrations from review step
   editedClips: z.array(z.object({
     imageIndex: z.number(),
@@ -42,7 +44,7 @@ export async function POST(req: NextRequest) {
       );
     }
 
-    const { videoId, address, propertyType, tone, voiceId, musicStyle, aspectRatios, imageKeys, autoSort, addMusic, editedClips } =
+    const { videoId, address, propertyType, tone, voiceId, musicStyle, aspectRatios, imageKeys, autoSort, addMusic, videoQuality, editedClips } =
       parsed.data;
 
     const user = await db.query.users.findFirst({
@@ -66,6 +68,7 @@ export async function POST(req: NextRequest) {
       imageKeys,
       autoSort,
       addMusic,
+      videoQuality,
       editedClips,
     });
 

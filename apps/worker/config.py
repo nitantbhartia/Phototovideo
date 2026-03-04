@@ -27,6 +27,15 @@ class Settings(BaseSettings):
     openai_tts_model: str = "gpt-4o-mini-tts"
     openai_tts_voice: str = "coral"  # alloy, ash, ballad, coral, echo, fable, onyx, nova, sage, shimmer
 
+    # AI video generation: "luma", "runway", or "ken_burns" (free, no API)
+    video_gen_provider: str = "ken_burns"
+    lumaai_api_key: str | None = None
+    lumaai_model: str = "ray-flash-2"  # "ray-2" for higher quality, "ray-flash-2" for speed
+    runway_api_key: str | None = None
+    runway_model: str = "gen4_turbo"  # "gen3a_turbo" for cheaper
+    video_gen_duration: str = "5s"  # AI video clip duration
+    max_video_gen_workers: int = 3  # parallel AI video gen API calls
+
     # Video settings
     video_width: int = 1920
     video_height: int = 1080
