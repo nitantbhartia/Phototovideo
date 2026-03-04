@@ -44,7 +44,46 @@ export interface VideoJob {
   addMusic: boolean;
 }
 
+function isGuestMode() {
+  return process.env.GUEST_MODE === "true";
+}
+
+async function dispatchVideoJobDirect(job: VideoJob): Promise<string> {
+  const workerUrl = process.env.WORKER_URL;
+  const workerSecret = process.env.WORKER_SECRET;
+
+  if (!workerUrl) {
+    throw new Error("WORKER_URL is not configured");
+  }
+
+  if (!workerSecret) {
+    throw new Error("WORKER_SECRET is not configured");
+  }
+
+  const response = await fetch(`${workerUrl}/process`, {
+    method: "POST",
+    headers: {
+      "content-type": "application/json",
+      "x-worker-secret": workerSecret,
+    },
+    body: JSON.stringify(job),
+  });
+
+  if (!response.ok) {
+    const errorText = await response.text();
+    throw new Error(
+      `Worker request failed with ${response.status}: ${errorText || "unknown error"}`
+    );
+  }
+
+  return job.videoId;
+}
+
 export async function dispatchVideoJob(job: VideoJob): Promise<string> {
+  if (isGuestMode()) {
+    return dispatchVideoJobDirect(job);
+  }
+
   const qstash = getQStash();
   const workerUrl = `${process.env.WORKER_URL}/process`;
 
