@@ -528,26 +528,40 @@ def render_all_clips(clips: list[dict], work_dir: str) -> list[dict]:
 # Stage 5: Final Assembly
 # ─────────────────────────────────────────────
 
-def create_srt_file(clips: list[dict], srt_path: str):
-    """Generate SRT subtitle file from narrations."""
-    with open(srt_path, "w", encoding="utf-8") as f:
+def create_ass_file(clips: list[dict], ass_path: str, width: int = 1920, height: int = 1080):
+    """Generate ASS subtitle file with PlayRes matching video so FontSize is literal pixels."""
+
+    def fmt_ass(t: float) -> str:
+        h = int(t // 3600)
+        m = int((t % 3600) // 60)
+        s = int(t % 60)
+        cs = int((t % 1) * 100)
+        return f"{h}:{m:02d}:{s:02d}.{cs:02d}"
+
+    with open(ass_path, "w", encoding="utf-8") as f:
+        f.write(f"[Script Info]\nScriptType: v4.00+\nPlayResX: {width}\nPlayResY: {height}\n\n")
+        f.write("[V4+ Styles]\n")
+        f.write(
+            "Format: Name, Fontname, Fontsize, PrimaryColour, SecondaryColour, "
+            "OutlineColour, BackColour, Bold, Italic, Underline, StrikeOut, "
+            "ScaleX, ScaleY, Spacing, Angle, BorderStyle, Outline, Shadow, "
+            "Alignment, MarginL, MarginR, MarginV, Encoding\n"
+        )
+        # FontSize=32 at PlayResY=height → 32px; Alignment=2 = bottom-center; MarginV=50px
+        f.write(
+            "Style: Default,Arial,32,&H00FFFFFF,&H000000FF,&H00000000,&H80000000,"
+            "0,0,0,0,100,100,0,0,3,2,1,2,30,30,50,1\n\n"
+        )
+        f.write("[Events]\n")
+        f.write("Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text\n")
+
         current_time = 0.0
-        for i, clip in enumerate(clips):
+        for clip in clips:
             start = current_time + clip.get("speech_start", 0.0)
             end = current_time + min(clip["clip_duration"], clip.get("speech_end", clip["clip_duration"]))
-
-            def fmt_time(t):
-                h = int(t // 3600)
-                m = int((t % 3600) // 60)
-                s = int(t % 60)
-                ms = int((t % 1) * 1000)
-                return f"{h:02d}:{m:02d}:{s:02d},{ms:03d}"
-
-            f.write(f"{i + 1}\n")
-            f.write(f"{fmt_time(start)} --> {fmt_time(end)}\n")
-            f.write(f"{clip['narration']}\n\n")
-
-            current_time = current_time + clip["clip_duration"]
+            text = clip["narration"].replace("\n", "\\N")
+            f.write(f"Dialogue: 0,{fmt_ass(start)},{fmt_ass(end)},Default,,0,0,0,,{text}\n")
+            current_time += clip["clip_duration"]
 
 
 def ensure_background_music(track_duration: float, work_dir: str) -> str | None:
@@ -605,14 +619,9 @@ def assemble_final_video(
     logger.info("Assembling final video...")
 
     # Add subtitles for every final output, including single-image jobs.
-    srt_path = os.path.join(work_dir, "subtitles.srt")
-    create_srt_file(clips, srt_path)
-    subtitle_filter = (
-        f"subtitles={srt_path}:original_size={settings.video_width}x{settings.video_height}:force_style="
-        f"'FontName=Arial,FontSize={settings.subtitle_font_size},PrimaryColour=&H00FFFFFF,"
-        f"OutlineColour=&H26000000,BackColour=&H40000000,"
-        f"BorderStyle=3,Outline=1,Shadow=0,MarginV={settings.subtitle_margin_v},Alignment=2'"
-    )
+    ass_path = os.path.join(work_dir, "subtitles.ass")
+    create_ass_file(clips, ass_path, settings.video_width, settings.video_height)
+    subtitle_filter = f"subtitles={ass_path}"
 
     watermark_filter = (
         "drawtext=text='ListingReel Preview':fontcolor=white@0.4:"
