@@ -42,6 +42,10 @@ class Settings(BaseSettings):
     subtitle_margin_v: int = 60
     background_music_volume: float = 0.14
 
+    # Parallelism — concurrent clip renders and TTS calls
+    max_render_workers: int = 3  # parallel ffmpeg clip renders
+    max_tts_workers: int = 4     # parallel TTS API calls
+
     class Config:
         env_file = ".env"
         env_file_encoding = "utf-8"
