@@ -26,9 +26,13 @@ class Settings(BaseSettings):
     video_fps: int = 24
     video_crf: int = 20
     clip_min_duration: float = 4.0
-    clip_max_duration: float = 8.0
+    clip_max_duration: float = 10.0
     background_music_volume: float = 0.08
-    xfade_duration: float = 0.8
+    xfade_duration: float = 0.45
+    narration_lead_in: float = 0.35
+    narration_lead_out: float = 0.85
+    subtitle_font_size: int = 14
+    subtitle_margin_v: int = 96
 
     class Config:
         env_file = ".env"

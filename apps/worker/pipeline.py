@@ -400,9 +400,14 @@ def generate_audio(
         duration_ms = get_audio_duration_ms(audio_path)
         clip["audio_path"] = audio_path
         clip["audio_duration_ms"] = duration_ms
+        clip["speech_start"] = settings.narration_lead_in
+        clip["speech_end"] = settings.narration_lead_in + duration_ms / 1000
         clip["clip_duration"] = max(
             settings.clip_min_duration,
-            min(settings.clip_max_duration, duration_ms / 1000 + 0.5),
+            min(
+                settings.clip_max_duration,
+                settings.narration_lead_in + duration_ms / 1000 + settings.narration_lead_out,
+            ),
         )
 
     return clips
@@ -444,22 +449,22 @@ def render_clip(
     Render a single clip with Ken Burns effect, color grade, and audio.
     zoom_direction: "in" (slow zoom in) or "out" (slow zoom out)
     """
-    # Ken Burns zoompan filter
-    # zoom=1.0→1.05 over clip duration = gentle zoom
-    total_frames = int(clip_duration * fps)
+    # Stable overscan pan. Avoid zoompan because it creates visible jitter.
+    travel_x = "40"
+    travel_y = "18"
+    overscan = "1.12"
 
     if zoom_direction == "in":
-        zoom_expr = f"if(lte(on,1),1.0,min(1.06,zoom+0.0006))"
-        x_expr = "iw/2-(iw/zoom/2)"
-        y_expr = "ih/2-(ih/zoom/2)"
+        x_expr = f"-(t/{clip_duration:.3f})*{travel_x}"
+        y_expr = f"-(t/{clip_duration:.3f})*{travel_y}"
     else:
-        zoom_expr = f"if(lte(on,1),1.06,max(1.0,zoom-0.0006))"
-        x_expr = "iw/2-(iw/zoom/2)"
-        y_expr = "ih/2-(ih/zoom/2)"
+        x_expr = f"-{travel_x}+((t/{clip_duration:.3f})*{travel_x})"
+        y_expr = f"-{travel_y}+((t/{clip_duration:.3f})*{travel_y})"
 
-    zoompan_filter = (
-        f"zoompan=z='{zoom_expr}':x='{x_expr}':y='{y_expr}'"
-        f":d={total_frames}:s={width}x{height}:fps={fps}"
+    motion_filter = (
+        f"scale={width}*{overscan}:{height}*{overscan},"
+        f"crop={width}:{height}:x='{x_expr}':y='{y_expr}',"
+        f"fps={fps},trim=duration={clip_duration:.3f}"
     )
 
     # Color grading: warm curves + slight brightness + vignette
@@ -470,7 +475,7 @@ def render_clip(
     )
 
     # Full video filter chain
-    video_filter = f"{zoompan_filter},{color_filter}"
+    video_filter = f"{motion_filter},{color_filter}"
 
     cmd = [
         "ffmpeg", "-y",
@@ -485,7 +490,6 @@ def render_clip(
         "-c:a", "aac",
         "-b:a", "192k",
         "-ar", "44100",
-        "-t", str(clip_duration),
         "-shortest",
         "-movflags", "+faststart",
         output_path,
@@ -529,8 +533,8 @@ def create_srt_file(clips: list[dict], srt_path: str):
     with open(srt_path, "w", encoding="utf-8") as f:
         current_time = 0.0
         for i, clip in enumerate(clips):
-            start = current_time
-            end = current_time + clip["clip_duration"]
+            start = current_time + clip.get("speech_start", 0.0)
+            end = current_time + min(clip["clip_duration"], clip.get("speech_end", clip["clip_duration"]))
 
             def fmt_time(t):
                 h = int(t // 3600)
@@ -543,7 +547,7 @@ def create_srt_file(clips: list[dict], srt_path: str):
             f.write(f"{fmt_time(start)} --> {fmt_time(end)}\n")
             f.write(f"{clip['narration']}\n\n")
 
-            current_time = end - settings.xfade_duration
+            current_time = current_time + clip["clip_duration"] - settings.xfade_duration
 
 
 def assemble_final_video(
@@ -569,8 +573,9 @@ def assemble_final_video(
 
     subtitle_filter = (
         f"subtitles={srt_path}:force_style="
-        "'FontName=Arial,FontSize=20,PrimaryColour=&Hffffff,OutlineColour=&H000000,"
-        "BorderStyle=3,Outline=2,Shadow=1,MarginV=40,Alignment=2'"
+        f"'FontName=Arial,FontSize={settings.subtitle_font_size},PrimaryColour=&H00FFFFFF,"
+        f"OutlineColour=&H26000000,BackColour=&H40000000,"
+        f"BorderStyle=3,Outline=1,Shadow=0,MarginV={settings.subtitle_margin_v},Alignment=2'"
     )
 
     watermark_filter = (
