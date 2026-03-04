@@ -1,10 +1,15 @@
 import { NextRequest, NextResponse } from "next/server";
 import { getDb } from "@/lib/db";
-import { videos } from "@/lib/db/schema";
+import { smsConversations, smsMessages, videos } from "@/lib/db/schema";
 import { eq } from "drizzle-orm";
 import { setVideoStatus } from "@/lib/queue";
 import { sendVideoReadyEmail, sendVideoErrorEmail } from "@/lib/email";
 import { z } from "zod";
+import {
+  buildPublicVideoDownloadUrl,
+  isTwilioConfigured,
+  sendSmsMessage,
+} from "@/lib/sms";
 
 const StatusUpdateSchema = z.object({
   videoId: z.string().uuid(),
@@ -80,6 +85,45 @@ export async function POST(req: NextRequest) {
             name: video.user.name || "there",
             address: video.address,
           }).catch(console.error);
+        }
+      }
+
+      const smsConversation = await db.query.smsConversations.findFirst({
+        where: eq(smsConversations.activeVideoId, videoId),
+      });
+
+      if (smsConversation) {
+        const nextSmsState = status === "done" ? "done" : "error";
+        const shouldSendSms = smsConversation.state !== nextSmsState;
+        const updateConversationState = {
+          state: nextSmsState,
+          updatedAt: new Date(),
+          lastOutboundAt: new Date(),
+        } as const;
+
+        await db
+          .update(smsConversations)
+          .set(updateConversationState)
+          .where(eq(smsConversations.id, smsConversation.id));
+
+        if (shouldSendSms && isTwilioConfigured() && video) {
+          const smsBody =
+            status === "done"
+              ? `Your ListingReel for ${video.address} is ready: ${buildPublicVideoDownloadUrl(video.shareId)}`
+              : `Your ListingReel for ${video.address} hit an error. Reply START to retry or RESET to start over.`;
+
+          try {
+            const messageSid = await sendSmsMessage(smsConversation.phoneNumber, smsBody);
+            await db.insert(smsMessages).values({
+              conversationId: smsConversation.id,
+              direction: "outbound",
+              messageSid,
+              body: smsBody,
+              mediaCount: 0,
+            });
+          } catch (smsError) {
+            console.error("[worker status] Failed to send SMS update", smsError);
+          }
         }
       }
     }

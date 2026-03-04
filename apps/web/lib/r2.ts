@@ -106,3 +106,11 @@ export function generateImageKey(
 ): string {
   return `uploads/${userId}/${videoId}/${filename}`;
 }
+
+export function generateConversationImageKey(
+  userId: string,
+  conversationId: string,
+  filename: string
+): string {
+  return `uploads/${userId}/sms/${conversationId}/${filename}`;
+}
