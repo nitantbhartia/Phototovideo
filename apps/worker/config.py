@@ -24,7 +24,7 @@ class Settings(BaseSettings):
     video_width: int = 1920
     video_height: int = 1080
     video_fps: int = 24
-    video_crf: int = 20
+    video_crf: int = 18
     clip_min_duration: float = 4.0
     clip_max_duration: float = 12.0
     xfade_duration: float = 0.45
