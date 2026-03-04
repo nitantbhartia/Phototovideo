@@ -8,7 +8,7 @@ import { generatePresignedDownloadUrl } from "@/lib/r2";
 import { Button } from "@/components/ui/button";
 import { Download, Film, RefreshCw } from "lucide-react";
 import Link from "next/link";
-import { getCurrentClerkUser } from "@/lib/auth";
+import { getCurrentClerkUser, isGuestMode } from "@/lib/auth";
 
 export const dynamic = "force-dynamic";
 
@@ -37,8 +37,11 @@ export default async function VideoPage({ params }: Props) {
   const video = await getVideo(params.id);
   if (!video) notFound();
 
+  const guestMode = isGuestMode();
   const clerkUser = await getCurrentClerkUser();
-  const isOwner = clerkUser && video.user.clerkId === clerkUser.id;
+  const isOwner = guestMode
+    ? video.user.clerkId === "guest-test-user"
+    : !!clerkUser && video.user.clerkId === clerkUser.id;
 
   let videoUrl: string | null = null;
   if (video.r2Key && video.status === "done") {
@@ -47,7 +50,9 @@ export default async function VideoPage({ params }: Props) {
 
   const appUrl = process.env.NEXT_PUBLIC_APP_URL || "";
 
-  const showUnlockBanner = isOwner && video.status === "done" && !video.paid && videoUrl;
+  const canDownload = guestMode || video.paid;
+  const showUnlockBanner =
+    !guestMode && isOwner && video.status === "done" && !video.paid && videoUrl;
 
   return (
     <div className="min-h-screen bg-charcoal pb-24">
@@ -57,7 +62,7 @@ export default async function VideoPage({ params }: Props) {
           <Film className="h-4 w-4 text-gold" />
           <span className="font-serif text-sm font-bold text-gold">ListingReel</span>
         </Link>
-        {!clerkUser && (
+        {!clerkUser && !guestMode && (
           <Link
             href="/sign-up"
             className="text-xs text-cream-200/70 hover:text-gold transition-colors"
@@ -122,7 +127,7 @@ export default async function VideoPage({ params }: Props) {
           <div className="flex gap-3 flex-wrap">
             {isOwner && video.status === "done" && (
               <>
-                {video.paid ? (
+                {canDownload ? (
                   <Button asChild>
                     <a href={`/api/videos/${video.id}/download`}>
                       <Download className="h-4 w-4 mr-2" />
@@ -155,7 +160,9 @@ export default async function VideoPage({ params }: Props) {
                   ListingReel generates cinematic listing videos from your photos in 5 minutes.
                 </p>
                 <Button asChild className="w-full">
-                  <Link href="/sign-up">Create My Video for $49</Link>
+                  <Link href={guestMode ? "/generate" : "/sign-up"}>
+                    {guestMode ? "Create another video" : "Create My Video for $49"}
+                  </Link>
                 </Button>
               </div>
             )}

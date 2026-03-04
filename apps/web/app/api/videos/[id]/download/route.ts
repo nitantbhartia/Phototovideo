@@ -3,7 +3,7 @@ import { getDb } from "@/lib/db";
 import { videos } from "@/lib/db/schema";
 import { eq } from "drizzle-orm";
 import { generatePresignedDownloadUrl } from "@/lib/r2";
-import { getClerkUserId } from "@/lib/auth";
+import { getClerkUserId, isGuestMode } from "@/lib/auth";
 
 interface Params {
   params: { id: string };
@@ -12,7 +12,8 @@ interface Params {
 export async function GET(req: NextRequest, { params }: Params) {
   try {
     const db = getDb();
-    const clerkId = await getClerkUserId();
+    const guestMode = isGuestMode();
+    const clerkId = guestMode ? "guest-test-user" : await getClerkUserId();
     if (!clerkId) {
       return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
     }
@@ -34,7 +35,7 @@ export async function GET(req: NextRequest, { params }: Params) {
       return NextResponse.json({ error: "Video not ready" }, { status: 400 });
     }
 
-    if (!video.paid) {
+    if (!guestMode && !video.paid) {
       // Redirect to checkout
       return NextResponse.redirect(
         `${process.env.NEXT_PUBLIC_APP_URL}/api/checkout?videoId=${video.id}&plan=PAY_PER_VIDEO`

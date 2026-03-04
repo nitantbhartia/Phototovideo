@@ -107,6 +107,10 @@ export async function setVideoStatus(
   status: string,
   message?: string
 ): Promise<void> {
+  if (isGuestMode()) {
+    return;
+  }
+
   const redis = getRedis();
   await redis.hset(`video:${videoId}`, {
     status,
@@ -120,6 +124,10 @@ export async function getVideoStatus(videoId: string): Promise<{
   message: string;
   updatedAt: number;
 } | null> {
+  if (isGuestMode()) {
+    return null;
+  }
+
   const redis = getRedis();
   const data = await redis.hgetall(`video:${videoId}`);
   if (!data) return null;
