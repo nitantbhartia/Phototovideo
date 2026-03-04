@@ -52,6 +52,32 @@ ROOM_ORDER = [
     "other",
 ]
 
+# Motion style per room type — matches camera movement to the space.
+# push_in:   slow zoom toward a focal point (detail rooms, features)
+# pull_back:  zoom out to reveal the full space (large rooms)
+# pan_right:  horizontal sweep L→R (wide/exterior shots)
+# pan_left:   horizontal sweep R→L (variety for dining/secondary rooms)
+# tilt_up:    vertical sweep upward (tall ceilings, entryways)
+ROOM_MOTION = {
+    "exterior": "pan_right",
+    "entryway": "tilt_up",
+    "foyer": "tilt_up",
+    "living room": "pull_back",
+    "family room": "pull_back",
+    "dining room": "pan_left",
+    "kitchen": "push_in",
+    "bedroom": "pull_back",
+    "master bedroom": "pull_back",
+    "bathroom": "push_in",
+    "office": "push_in",
+    "laundry": "push_in",
+    "garage": "pan_right",
+    "backyard": "pan_right",
+    "outdoor": "pan_right",
+    "pool": "pan_right",
+    "other": "push_in",
+}
+
 TONE_PROMPTS = {
     "Warm & Inviting": "warm, welcoming, and homey. Use phrases that evoke comfort, family, and belonging.",
     "Luxury & Refined": "sophisticated, upscale, and refined. Use elevated language that conveys exclusivity and premium quality.",
@@ -440,18 +466,24 @@ def render_clip(
     audio_path: str,
     clip_duration: float,
     output_path: str,
-    zoom_direction: str = "in",
+    motion: str = "push_in",
     width: int = 1920,
     height: int = 1080,
     fps: int = 24,
 ):
     """
-    Render a single clip with Ken Burns (zoom + pan) effect, color grade, and audio.
-    Uses ffmpeg zoompan filter for smooth sub-pixel animation instead of
-    scale+crop which causes jitter from integer pixel rounding.
+    Render a single clip with Ken Burns effect, color grade, and audio.
+    Uses ffmpeg zoompan filter for smooth sub-pixel animation.
+
+    motion styles:
+      push_in   – zoom 1.00→1.15, centered (detail rooms)
+      pull_back – zoom 1.15→1.00, centered (reveal large spaces)
+      pan_right – steady z=1.10, horizontal sweep L→R (exteriors)
+      pan_left  – steady z=1.10, horizontal sweep R→L (variety)
+      tilt_up   – steady z=1.10, vertical sweep bottom→top (tall rooms)
     """
     total_frames = max(int(clip_duration * fps), 1)
-    frame_denom = max(total_frames - 1, 1)
+    fd = max(total_frames - 1, 1)  # frame denominator for 0→1 progress
 
     # Pre-scale to 2× output so zoompan never upscales (important for
     # lower-res sources like Zillow ~1024 px).
@@ -463,18 +495,34 @@ def render_clip(
         f"crop={pre_w}:{pre_h},setsar=1"
     )
 
-    # Ken Burns: 15% zoom range + noticeable directional pan.
-    # Previous 6% was too subtle and looked like a slideshow.
-    if zoom_direction == "in":
-        # Zoom in (1.00 → 1.15) with pan drifting right-down
-        z_expr = f"1+0.15*(on/{frame_denom})"
-        x_expr = f"(iw-iw/zoom)/2+0.02*iw*(on/{frame_denom})"
-        y_expr = f"(ih-ih/zoom)/2+0.01*ih*(on/{frame_denom})"
+    # Build zoompan expressions based on motion style.
+    # pan range = iw - iw/z; at z=1.10 that's ~9% of iw (~346 px on 3840).
+    # At z=1.15 it's ~13% (~500 px). Both give >1 px/frame = smooth.
+    if motion == "push_in":
+        z_expr = f"1+0.15*(on/{fd})"
+        x_expr = f"(iw-iw/zoom)/2"
+        y_expr = f"(ih-ih/zoom)/2"
+    elif motion == "pull_back":
+        z_expr = f"1.15-0.15*(on/{fd})"
+        x_expr = f"(iw-iw/zoom)/2"
+        y_expr = f"(ih-ih/zoom)/2"
+    elif motion == "pan_right":
+        z_expr = "1.10"
+        x_expr = f"(iw-iw/zoom)*(0.05+0.90*(on/{fd}))"
+        y_expr = f"(ih-ih/zoom)/2"
+    elif motion == "pan_left":
+        z_expr = "1.10"
+        x_expr = f"(iw-iw/zoom)*(0.95-0.90*(on/{fd}))"
+        y_expr = f"(ih-ih/zoom)/2"
+    elif motion == "tilt_up":
+        z_expr = "1.10"
+        x_expr = f"(iw-iw/zoom)/2"
+        y_expr = f"(ih-ih/zoom)*(0.85-0.70*(on/{fd}))"
     else:
-        # Zoom out (1.15 → 1.00) with pan drifting left-up
-        z_expr = f"1.15-0.15*(on/{frame_denom})"
-        x_expr = f"(iw-iw/zoom)/2-0.02*iw*(1-on/{frame_denom})"
-        y_expr = f"(ih-ih/zoom)/2-0.01*ih*(1-on/{frame_denom})"
+        # Fallback: push_in
+        z_expr = f"1+0.15*(on/{fd})"
+        x_expr = f"(iw-iw/zoom)/2"
+        y_expr = f"(ih-ih/zoom)/2"
 
     zoompan_filter = (
         f"zoompan=z='{z_expr}':x='{x_expr}':y='{y_expr}'"
@@ -524,20 +572,46 @@ def render_clip(
         raise RuntimeError(f"ffmpeg clip render failed: {result.stderr[-500:]}")
 
 
+def motion_for_room(room_label: str, clip_index: int) -> str:
+    """Pick a motion style based on room type, with variety for consecutive same-type rooms."""
+    label = room_label.lower()
+    # Try exact match first, then substring match
+    motion = ROOM_MOTION.get(label)
+    if not motion:
+        for key, value in ROOM_MOTION.items():
+            if key in label or label in key:
+                motion = value
+                break
+    if not motion:
+        motion = "push_in"
+    # Avoid identical motion on consecutive clips — flip between two
+    # complementary styles when the same motion would repeat.
+    alternates = {
+        "push_in": "pull_back",
+        "pull_back": "push_in",
+        "pan_right": "pan_left",
+        "pan_left": "pan_right",
+        "tilt_up": "push_in",
+    }
+    if clip_index % 2 == 1 and motion in alternates:
+        motion = alternates[motion]
+    return motion
+
+
 def render_all_clips(clips: list[dict], work_dir: str) -> list[dict]:
-    """Render all clips with alternating zoom direction."""
+    """Render all clips with room-aware motion styles."""
     logger.info(f"Rendering {len(clips)} video clips...")
 
     for i, clip in enumerate(clips):
         clip_path = os.path.join(work_dir, f"clip_{i:03d}.mp4")
-        zoom_dir = "in" if i % 2 == 0 else "out"
+        motion = motion_for_room(clip.get("room_label", "other"), i)
 
         render_clip(
             image_path=clip["path"],
             audio_path=clip["audio_path"],
             clip_duration=clip["clip_duration"],
             output_path=clip_path,
-            zoom_direction=zoom_dir,
+            motion=motion,
             width=settings.video_width,
             height=settings.video_height,
             fps=settings.video_fps,
