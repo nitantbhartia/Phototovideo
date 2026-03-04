@@ -23,20 +23,8 @@ export const PLANS = {
   PAY_PER_VIDEO: {
     priceId: process.env.STRIPE_PAY_PER_VIDEO_PRICE_ID!,
     amount: 4900,
-    name: "Pay-per-video",
+    name: "Per Listing",
     credits: 1,
-  },
-  STARTER: {
-    priceId: process.env.STRIPE_STARTER_PRICE_ID!,
-    amount: 9900,
-    name: "Starter",
-    credits: 10,
-  },
-  PRO: {
-    priceId: process.env.STRIPE_PRO_PRICE_ID!,
-    amount: 24900,
-    name: "Pro",
-    credits: -1, // unlimited
   },
 } as const;
 
@@ -56,12 +44,11 @@ export async function createCheckoutSession({
   cancelUrl: string;
 }): Promise<string> {
   const planConfig = PLANS[plan];
-  const isSubscription = plan === "STARTER" || plan === "PRO";
   const stripe = getStripe();
 
   const session = await stripe.checkout.sessions.create({
     customer_email: userEmail,
-    mode: isSubscription ? "subscription" : "payment",
+    mode: "payment",
     payment_method_types: ["card"],
     line_items: [
       {
@@ -81,14 +68,3 @@ export async function createCheckoutSession({
   return session.url!;
 }
 
-export async function createCustomerPortalSession(
-  stripeCustomerId: string,
-  returnUrl: string
-): Promise<string> {
-  const stripe = getStripe();
-  const session = await stripe.billingPortal.sessions.create({
-    customer: stripeCustomerId,
-    return_url: returnUrl,
-  });
-  return session.url;
-}
