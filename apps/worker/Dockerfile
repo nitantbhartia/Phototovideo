@@ -1,8 +1,9 @@
 FROM python:3.12-slim
 
-# Install system dependencies including ffmpeg
+# Install system dependencies including ffmpeg with H.265/HEVC support
 RUN apt-get update && apt-get install -y --no-install-recommends \
     ffmpeg \
+    libx265-dev \
     libpq-dev \
     gcc \
     wget \
@@ -19,7 +20,9 @@ RUN pip install --no-cache-dir -r requirements.txt
 COPY . .
 
 # Create assets directory for background music
-RUN mkdir -p assets
+# Drop real MP3s into assets/music/ to override synthetic generation
+# Naming: ambient.mp3, upbeat.mp3, cinematic.mp3, lofi.mp3, elegant.mp3
+RUN mkdir -p assets/music
 
 # Non-root user for security
 RUN useradd -m -u 1001 worker && chown -R worker:worker /app

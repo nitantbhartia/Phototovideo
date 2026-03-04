@@ -7,7 +7,7 @@ class Settings(BaseSettings):
     anthropic_model: str = "claude-opus-4-5"
     gemini_api_key: str | None = None
     gemini_model: str = "gemini-2.5-flash-lite"
-    elevenlabs_api_key: str
+    elevenlabs_api_key: str | None = None
     database_url: str
     upstash_redis_url: str
     upstash_redis_token: str
@@ -21,11 +21,18 @@ class Settings(BaseSettings):
     elevenlabs_voice_id: str = "21m00Tcm4TlvDq8ikWAM"  # Rachel
     elevenlabs_model: str = "eleven_multilingual_v2"
 
+    # TTS provider: "elevenlabs" or "openai"
+    tts_provider: str = "elevenlabs"
+    openai_api_key: str | None = None
+    openai_tts_model: str = "gpt-4o-mini-tts"
+    openai_tts_voice: str = "coral"  # alloy, ash, ballad, coral, echo, fable, onyx, nova, sage, shimmer
+
     # Video settings
     video_width: int = 1920
     video_height: int = 1080
     video_fps: int = 24
     video_crf: int = 16
+    video_codec: str = "h265"  # "h264" or "h265"
     clip_min_duration: float = 4.0
     clip_max_duration: float = 12.0
     xfade_duration: float = 0.45

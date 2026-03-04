@@ -80,6 +80,9 @@ const MUSIC_OPTIONS = [
   { value: "ambient", label: "Ambient", description: "Soft & calming" },
   { value: "upbeat", label: "Upbeat", description: "Energetic & modern" },
   { value: "cinematic", label: "Cinematic", description: "Dramatic & luxurious" },
+  { value: "lofi", label: "Lo-fi", description: "Chill & jazzy" },
+  { value: "elegant", label: "Elegant", description: "Classical & refined" },
+  { value: "none", label: "None", description: "No background music" },
 ];
 
 const ASPECT_RATIO_OPTIONS = [
