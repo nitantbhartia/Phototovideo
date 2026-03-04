@@ -11,9 +11,17 @@ const CreateVideoSchema = z.object({
   address: z.string().min(5, "Address too short").max(200),
   propertyType: z.string().default("Single Family"),
   tone: z.string().default("Warm & Inviting"),
+  voiceId: z.string().default("rachel"),
+  musicStyle: z.string().default("ambient"),
+  aspectRatio: z.enum(["16:9", "9:16", "1:1"]).default("16:9"),
   imageKeys: z.array(z.string()).min(1).max(20),
   autoSort: z.boolean().default(true),
   addMusic: z.boolean().default(true),
+  // Edit-before-render: pre-defined clip order and narrations from review step
+  editedClips: z.array(z.object({
+    imageIndex: z.number(),
+    narration: z.string(),
+  })).optional(),
 });
 
 export async function POST(req: NextRequest) {
@@ -34,7 +42,7 @@ export async function POST(req: NextRequest) {
       );
     }
 
-    const { videoId, address, propertyType, tone, imageKeys, autoSort, addMusic } =
+    const { videoId, address, propertyType, tone, voiceId, musicStyle, aspectRatio, imageKeys, autoSort, addMusic, editedClips } =
       parsed.data;
 
     const user = await db.query.users.findFirst({
@@ -53,6 +61,9 @@ export async function POST(req: NextRequest) {
         address,
         propertyType,
         tone,
+        voiceId,
+        musicStyle,
+        aspectRatio,
         status: "queued",
         statusMessage: "Job queued",
         updatedAt: new Date(),
@@ -77,9 +88,13 @@ export async function POST(req: NextRequest) {
       address,
       propertyType,
       tone,
+      voiceId,
+      musicStyle,
+      aspectRatio,
       imageKeys,
       autoSort,
       addMusic,
+      editedClips,
     });
 
     return NextResponse.json({ videoId, status: "queued" });

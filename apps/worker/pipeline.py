@@ -85,6 +85,22 @@ TONE_PROMPTS = {
 }
 
 
+# Voice presets — map friendly names to ElevenLabs voice IDs
+VOICE_PRESETS = {
+    "rachel": {"id": "21m00Tcm4TlvDq8ikWAM", "label": "Rachel (warm, female)"},
+    "josh": {"id": "TxGEqnHWrfWFTfGW9XjX", "label": "Josh (deep, male)"},
+    "bella": {"id": "EXAVITQu4vr4xnSDxMaL", "label": "Bella (soft, female)"},
+    "antoni": {"id": "ErXwobaYiN019PkySvjV", "label": "Antoni (warm, male)"},
+}
+
+# Aspect ratio presets — dimensions and subtitle positioning
+ASPECT_RATIOS = {
+    "16:9": {"width": 1920, "height": 1080, "subtitle_margin_v": 60},
+    "9:16": {"width": 1080, "height": 1920, "subtitle_margin_v": 140},
+    "1:1": {"width": 1080, "height": 1080, "subtitle_margin_v": 80},
+}
+
+
 class VideoJob:
     def __init__(self, data: dict):
         self.video_id = data["videoId"]
@@ -92,9 +108,13 @@ class VideoJob:
         self.address = data["address"]
         self.property_type = data.get("propertyType", "Single Family")
         self.tone = data.get("tone", "Warm & Inviting")
+        self.voice_id = data.get("voiceId", "rachel")
+        self.music_style = data.get("musicStyle", "ambient")
+        self.aspect_ratio = data.get("aspectRatio", "16:9")
         self.image_keys = data["imageKeys"]
         self.auto_sort = data.get("autoSort", True)
         self.add_music = data.get("addMusic", True)
+        self.edited_clips = data.get("editedClips", None)
 
 
 class PipelineResult:
@@ -399,16 +419,21 @@ def generate_audio(
     eleven: ElevenLabs,
     clips: list[dict],
     work_dir: str,
+    voice_id: str = "rachel",
 ) -> list[dict]:
     """Generate MP3 audio for each narration using ElevenLabs."""
     logger.info("Generating voiceover audio...")
+
+    # Resolve voice preset to ElevenLabs voice ID
+    voice_preset = VOICE_PRESETS.get(voice_id, VOICE_PRESETS["rachel"])
+    eleven_voice_id = voice_preset["id"]
 
     for i, clip in enumerate(clips):
         audio_path = os.path.join(work_dir, f"audio_{i:03d}.mp3")
 
         audio_bytes = eleven.generate(
             text=clip["narration"],
-            voice=settings.elevenlabs_voice_id,
+            voice=eleven_voice_id,
             model=settings.elevenlabs_model,
             voice_settings=VoiceSettings(
                 stability=0.65,
@@ -611,7 +636,12 @@ def motion_for_room(room_label: str, clip_index: int) -> str:
     return motion
 
 
-def render_all_clips(clips: list[dict], work_dir: str) -> list[dict]:
+def render_all_clips(
+    clips: list[dict],
+    work_dir: str,
+    width: int = 1920,
+    height: int = 1080,
+) -> list[dict]:
     """Render all clips with room-aware motion styles."""
     logger.info(f"Rendering {len(clips)} video clips...")
 
@@ -625,8 +655,8 @@ def render_all_clips(clips: list[dict], work_dir: str) -> list[dict]:
             clip_duration=clip["clip_duration"],
             output_path=clip_path,
             motion=motion,
-            width=settings.video_width,
-            height=settings.video_height,
+            width=width,
+            height=height,
             fps=settings.video_fps,
         )
 
@@ -639,7 +669,7 @@ def render_all_clips(clips: list[dict], work_dir: str) -> list[dict]:
 # Stage 5: Final Assembly
 # ─────────────────────────────────────────────
 
-def create_ass_file(clips: list[dict], ass_path: str, width: int = 1920, height: int = 1080):
+def create_ass_file(clips: list[dict], ass_path: str, width: int = 1920, height: int = 1080, margin_v: int | None = None):
     """Generate ASS subtitle file with PlayRes matching video so FontSize is literal pixels."""
 
     def fmt_ass(t: float) -> str:
@@ -660,7 +690,7 @@ def create_ass_file(clips: list[dict], ass_path: str, width: int = 1920, height:
         )
         # Alignment=2 = bottom-center; BorderStyle=1 = outline+shadow (not opaque box)
         fs = settings.subtitle_font_size
-        mv = settings.subtitle_margin_v
+        mv = margin_v if margin_v is not None else settings.subtitle_margin_v
         f.write(
             f"Style: Default,Arial,{fs},&H00FFFFFF,&H000000FF,&H00000000,&H80000000,"
             f"0,0,0,0,100,100,0,0,1,3,1,2,30,30,{mv},1\n\n"
@@ -677,31 +707,71 @@ def create_ass_file(clips: list[dict], ass_path: str, width: int = 1920, height:
             current_time += clip["clip_duration"]
 
 
-def ensure_background_music(track_duration: float, work_dir: str) -> str | None:
-    """Return a music track path, generating a soft ambient bed if no asset exists."""
-    bundled_music = os.path.join(os.path.dirname(__file__), "assets", "background.mp3")
-    if os.path.exists(bundled_music):
-        return bundled_music
+# Synthetic music definitions — different moods via harmonic combinations
+MUSIC_SYNTHS = {
+    "ambient": {
+        # Soft A-minor pad — warm and inviting
+        "expr": (
+            "0.18*sin(2*PI*110*t)+"
+            "0.12*sin(2*PI*220*t)+"
+            "0.10*sin(2*PI*261.63*t)+"
+            "0.08*sin(2*PI*329.63*t)+"
+            "0.04*sin(2*PI*440*t)"
+        ),
+        "lowpass": 800,
+        "highpass": 60,
+    },
+    "upbeat": {
+        # C-major with rhythmic pulsing — energetic and modern
+        "expr": (
+            "0.16*sin(2*PI*130.81*t)+"
+            "0.12*sin(2*PI*164.81*t)+"
+            "0.10*sin(2*PI*196*t)+"
+            "0.08*sin(2*PI*261.63*t)+"
+            "0.06*sin(2*PI*329.63*t)+"
+            "0.04*(0.5+0.5*sin(2*PI*2*t))*sin(2*PI*523.25*t)"
+        ),
+        "lowpass": 2000,
+        "highpass": 80,
+    },
+    "cinematic": {
+        # Deep D-minor — dramatic and luxurious
+        "expr": (
+            "0.20*sin(2*PI*73.42*t)+"
+            "0.15*sin(2*PI*146.83*t)+"
+            "0.10*sin(2*PI*174.61*t)+"
+            "0.08*sin(2*PI*220*t)+"
+            "0.05*sin(2*PI*293.66*t)+"
+            "0.03*sin(2*PI*440*t)"
+        ),
+        "lowpass": 600,
+        "highpass": 40,
+    },
+}
 
+
+def ensure_background_music(track_duration: float, work_dir: str, music_style: str = "ambient") -> str | None:
+    """Return a music track path. Checks for bundled MP3 first, falls back to synthetic generation."""
+    # Check for bundled track matching the requested style
+    assets_dir = os.path.join(os.path.dirname(__file__), "assets", "music")
+    bundled_track = os.path.join(assets_dir, f"{music_style}.mp3")
+    if os.path.exists(bundled_track):
+        return bundled_track
+
+    # Fallback: check for any bundled background.mp3
+    bundled_fallback = os.path.join(os.path.dirname(__file__), "assets", "background.mp3")
+    if os.path.exists(bundled_fallback):
+        return bundled_fallback
+
+    # Generate synthetic music bed
+    synth = MUSIC_SYNTHS.get(music_style, MUSIC_SYNTHS["ambient"])
     generated_music = os.path.join(work_dir, "background-bed.wav")
     fade_duration = min(2.0, max(track_duration / 4, 1.0))
     fade_out_start = max(track_duration - fade_duration, 0)
 
-    # Ambient pad: A-minor chord with harmonics at audible amplitude.
-    # Previous amplitudes (0.020/0.012/0.010) were ~50 dB below speech
-    # and completely inaudible after volume + amix reduction.
     synth_expr = (
-        "aevalsrc="
-        "0.18*sin(2*PI*110*t)+"
-        "0.12*sin(2*PI*220*t)+"
-        "0.10*sin(2*PI*261.63*t)+"
-        "0.08*sin(2*PI*329.63*t)+"
-        "0.04*sin(2*PI*440*t)|"
-        "0.18*sin(2*PI*110*t)+"
-        "0.12*sin(2*PI*220*t)+"
-        "0.10*sin(2*PI*261.63*t)+"
-        "0.08*sin(2*PI*329.63*t)+"
-        f"0.04*sin(2*PI*440*t):s=44100:d={track_duration:.3f}"
+        f"aevalsrc={synth['expr']}|{synth['expr']}"
+        f":s=44100:d={track_duration:.3f}"
     )
 
     cmd = [
@@ -709,7 +779,7 @@ def ensure_background_music(track_duration: float, work_dir: str) -> str | None:
         "-f", "lavfi",
         "-i", synth_expr,
         "-af",
-        f"lowpass=f=800,highpass=f=60,"
+        f"lowpass=f={synth['lowpass']},highpass=f={synth['highpass']},"
         f"afade=t=in:st=0:d={fade_duration:.3f},"
         f"afade=t=out:st={fade_out_start:.3f}:d={fade_duration:.3f}",
         generated_music,
@@ -722,12 +792,118 @@ def ensure_background_music(track_duration: float, work_dir: str) -> str | None:
     return generated_music
 
 
+def render_intro_card(
+    first_image: str,
+    address: str,
+    property_type: str,
+    output_path: str,
+    duration: float = 3.0,
+    width: int = 1920,
+    height: int = 1080,
+    fps: int = 24,
+):
+    """Render an intro title card: blurred first photo with address overlay."""
+    total_frames = int(duration * fps)
+
+    # Escape special chars for FFmpeg drawtext
+    safe_address = address.replace("'", "\u2019").replace(":", "\\:")
+    safe_type = property_type.replace("'", "\u2019").replace(":", "\\:")
+
+    # Compute font sizes relative to video width for aspect ratio support
+    title_size = max(int(width / 28), 24)
+    sub_size = max(int(width / 48), 16)
+
+    video_filter = (
+        f"scale={width}:{height}:force_original_aspect_ratio=increase:flags=lanczos,"
+        f"crop={width}:{height},setsar=1,"
+        f"boxblur=20:5,"
+        f"drawtext=text='{safe_address}':fontcolor=white:fontsize={title_size}"
+        f":x=(w-text_w)/2:y=(h-text_h)/2-{int(height*0.03)}:font=Arial:shadowcolor=black@0.6:shadowx=2:shadowy=2,"
+        f"drawtext=text='{safe_type}':fontcolor=white@0.8:fontsize={sub_size}"
+        f":x=(w-text_w)/2:y=(h/2)+{int(height*0.05)}:font=Arial,"
+        f"fade=t=in:st=0:d=0.8,"
+        f"fade=t=out:st={duration - 0.5:.3f}:d=0.5"
+    )
+
+    cmd = [
+        "ffmpeg", "-y",
+        "-loop", "1",
+        "-i", first_image,
+        "-f", "lavfi", "-i", f"anullsrc=r=44100:cl=stereo:d={duration}",
+        "-filter_complex", f"[0:v]{video_filter}[v]",
+        "-map", "[v]",
+        "-map", "1:a",
+        "-c:v", "libx264", "-preset", "slow", "-crf", "8",
+        "-pix_fmt", "yuv420p",
+        "-c:a", "aac", "-b:a", "192k",
+        "-t", f"{duration:.3f}",
+        output_path,
+    ]
+
+    result = subprocess.run(cmd, capture_output=True, text=True)
+    if result.returncode != 0:
+        logger.warning(f"Intro card render failed: {result.stderr[-500:]}")
+        return False
+    return True
+
+
+def render_outro_card(
+    last_image: str,
+    output_path: str,
+    duration: float = 4.0,
+    width: int = 1920,
+    height: int = 1080,
+    fps: int = 24,
+):
+    """Render an outro CTA card: blurred last photo with call-to-action."""
+    cta_size = max(int(width / 32), 22)
+    brand_size = max(int(width / 54), 14)
+
+    video_filter = (
+        f"scale={width}:{height}:force_original_aspect_ratio=increase:flags=lanczos,"
+        f"crop={width}:{height},setsar=1,"
+        f"boxblur=25:5,"
+        f"colorbalance=rs=-0.1:gs=-0.1:bs=-0.05,"
+        f"drawtext=text='Schedule Your Showing Today':fontcolor=white:fontsize={cta_size}"
+        f":x=(w-text_w)/2:y=(h-text_h)/2-{int(height*0.02)}:font=Arial:shadowcolor=black@0.6:shadowx=2:shadowy=2,"
+        f"drawtext=text='Made with ListingReel':fontcolor=white@0.5:fontsize={brand_size}"
+        f":x=(w-text_w)/2:y=h-{int(height*0.08)}:font=Arial,"
+        f"fade=t=in:st=0:d=0.5,"
+        f"fade=t=out:st={duration - 1.0:.3f}:d=1.0"
+    )
+
+    cmd = [
+        "ffmpeg", "-y",
+        "-loop", "1",
+        "-i", last_image,
+        "-f", "lavfi", "-i", f"anullsrc=r=44100:cl=stereo:d={duration}",
+        "-filter_complex", f"[0:v]{video_filter}[v]",
+        "-map", "[v]",
+        "-map", "1:a",
+        "-c:v", "libx264", "-preset", "slow", "-crf", "8",
+        "-pix_fmt", "yuv420p",
+        "-c:a", "aac", "-b:a", "192k",
+        "-t", f"{duration:.3f}",
+        output_path,
+    ]
+
+    result = subprocess.run(cmd, capture_output=True, text=True)
+    if result.returncode != 0:
+        logger.warning(f"Outro card render failed: {result.stderr[-500:]}")
+        return False
+    return True
+
+
 def assemble_final_video(
     clips: list[dict],
     work_dir: str,
     output_path: str,
     add_music: bool = True,
     watermark: bool = True,
+    music_style: str = "ambient",
+    width: int = 1920,
+    height: int = 1080,
+    subtitle_margin_v: int | None = None,
 ):
     """
     Assemble all clips into final MP4 with:
@@ -741,7 +917,7 @@ def assemble_final_video(
 
     # Add subtitles for every final output, including single-image jobs.
     ass_path = os.path.join(work_dir, "subtitles.ass")
-    create_ass_file(clips, ass_path, settings.video_width, settings.video_height)
+    create_ass_file(clips, ass_path, width, height, margin_v=subtitle_margin_v)
     subtitle_filter = f"subtitles={ass_path}"
 
     watermark_filter = (
@@ -750,7 +926,7 @@ def assemble_final_video(
     )
 
     total_duration = sum(clip["clip_duration"] for clip in clips)
-    music_file = ensure_background_music(total_duration, work_dir) if add_music else None
+    music_file = ensure_background_music(total_duration, work_dir, music_style) if add_music else None
     has_music_file = bool(music_file)
 
     if len(clips) == 1:
@@ -889,9 +1065,67 @@ def get_video_duration(video_path: str) -> int:
 # Main Pipeline Orchestrator
 # ─────────────────────────────────────────────
 
+def run_plan_only(job: VideoJob) -> dict:
+    """
+    Run stages 1-2 only (classify + narrate) and return the plan as JSON.
+    Used for the edit-before-render flow.
+    """
+    work_dir = tempfile.mkdtemp(prefix=f"listingreel_plan_{job.video_id}_")
+
+    try:
+        llm_provider, llm_client = create_llm_client()
+        r2 = get_r2_client()
+
+        # Download images
+        image_paths = []
+        for i, key in enumerate(job.image_keys):
+            ext = Path(key).suffix or ".jpg"
+            local_path = os.path.join(work_dir, f"img_{i:03d}{ext}")
+            if download_image(r2, key, local_path):
+                image_paths.append(local_path)
+
+        if not image_paths:
+            return {"error": "No images could be downloaded", "clips": []}
+
+        # Stage 1: Classify and sort
+        clips = classify_and_sort_images(
+            llm_provider, llm_client, image_paths, job.address, job.property_type, job.auto_sort
+        )
+
+        # Stage 2: Generate narrations
+        clips = generate_narrations(
+            llm_provider, llm_client, clips, job.address, job.property_type, job.tone
+        )
+
+        # Return the plan for user review
+        plan_clips = []
+        for clip in clips:
+            # Map back to the original image key index
+            filename = os.path.basename(clip["path"])
+            # img_000.jpg → 0
+            idx = int(filename.split("_")[1].split(".")[0])
+            plan_clips.append({
+                "imageIndex": idx,
+                "imageKey": job.image_keys[idx] if idx < len(job.image_keys) else "",
+                "roomLabel": clip.get("room_label", "other"),
+                "narration": clip.get("narration", ""),
+            })
+
+        return {"clips": plan_clips}
+
+    finally:
+        shutil.rmtree(work_dir, ignore_errors=True)
+
+
 def run_pipeline(job: VideoJob) -> PipelineResult:
     result = PipelineResult()
     work_dir = tempfile.mkdtemp(prefix=f"listingreel_{job.video_id}_")
+
+    # Resolve aspect ratio dimensions
+    ar = ASPECT_RATIOS.get(job.aspect_ratio, ASPECT_RATIOS["16:9"])
+    vid_width = ar["width"]
+    vid_height = ar["height"]
+    subtitle_mv = ar["subtitle_margin_v"]
 
     try:
         llm_provider, llm_client = create_llm_client()
@@ -899,10 +1133,7 @@ def run_pipeline(job: VideoJob) -> PipelineResult:
         r2 = get_r2_client()
 
         # ── Stage 1: Download images
-        stage_message = (
-            "Classifying & sorting rooms" if job.auto_sort else "Classifying rooms"
-        )
-        report_status(job.video_id, "processing", stage_message)
+        report_status(job.video_id, "processing", "Downloading images")
         logger.info(f"Downloading {len(job.image_keys)} images...")
 
         image_paths = []
@@ -915,34 +1146,99 @@ def run_pipeline(job: VideoJob) -> PipelineResult:
         if not image_paths:
             raise RuntimeError("No images could be downloaded")
 
-        # ── Stage 1: Classify and sort
-        clips = classify_and_sort_images(
-            llm_provider, llm_client, image_paths, job.address, job.property_type, job.auto_sort
-        )
+        # ── Stages 1-2: Classification + Narration
+        # If editedClips is provided (edit-before-render flow), skip AI stages
+        if job.edited_clips:
+            logger.info("Using user-edited clip plan (skipping AI classification + narration)")
+            clips = []
+            for ec in job.edited_clips:
+                idx = ec["imageIndex"]
+                if 0 <= idx < len(image_paths):
+                    clips.append({
+                        "path": image_paths[idx],
+                        "room_label": "other",
+                        "order_index": len(clips),
+                        "narration": ec["narration"],
+                    })
+        else:
+            # Stage 1: Classify and sort
+            stage_message = (
+                "Classifying & sorting rooms" if job.auto_sort else "Classifying rooms"
+            )
+            report_status(job.video_id, "processing", stage_message)
+            clips = classify_and_sort_images(
+                llm_provider, llm_client, image_paths, job.address, job.property_type, job.auto_sort
+            )
 
-        # ── Stage 2: Generate narrations
-        report_status(job.video_id, "processing", "Writing narrations")
-        clips = generate_narrations(
-            llm_provider, llm_client, clips, job.address, job.property_type, job.tone
-        )
+            # Stage 2: Generate narrations
+            report_status(job.video_id, "processing", "Writing narrations")
+            clips = generate_narrations(
+                llm_provider, llm_client, clips, job.address, job.property_type, job.tone
+            )
 
         # ── Stage 3: TTS
         report_status(job.video_id, "processing", "Recording voiceover")
-        clips = generate_audio(eleven, clips, work_dir)
+        clips = generate_audio(eleven, clips, work_dir, voice_id=job.voice_id)
 
-        # ── Stage 4: Render clips
+        # ── Stage 4: Render clips (+ intro/outro cards)
         report_status(job.video_id, "processing", "Rendering video clips")
-        clips = render_all_clips(clips, work_dir)
+        clips = render_all_clips(clips, work_dir, width=vid_width, height=vid_height)
+
+        # Render intro card
+        intro_path = os.path.join(work_dir, "intro_card.mp4")
+        has_intro = render_intro_card(
+            first_image=clips[0]["path"],
+            address=job.address,
+            property_type=job.property_type,
+            output_path=intro_path,
+            width=vid_width,
+            height=vid_height,
+            fps=settings.video_fps,
+        )
+
+        # Render outro card
+        outro_path = os.path.join(work_dir, "outro_card.mp4")
+        has_outro = render_outro_card(
+            last_image=clips[-1]["path"],
+            output_path=outro_path,
+            width=vid_width,
+            height=vid_height,
+            fps=settings.video_fps,
+        )
+
+        # Build the full clip list with intro/outro
+        all_clips = []
+        if has_intro:
+            all_clips.append({
+                "clip_path": intro_path,
+                "clip_duration": 3.0,
+                "narration": "",
+                "speech_start": 0,
+                "speech_end": 0,
+            })
+        all_clips.extend(clips)
+        if has_outro:
+            all_clips.append({
+                "clip_path": outro_path,
+                "clip_duration": 4.0,
+                "narration": "",
+                "speech_start": 0,
+                "speech_end": 0,
+            })
 
         # ── Stage 5: Assemble
         report_status(job.video_id, "processing", "Assembling final video")
         output_path = os.path.join(work_dir, "output.mp4")
         assemble_final_video(
-            clips=clips,
+            clips=all_clips,
             work_dir=work_dir,
             output_path=output_path,
             add_music=job.add_music,
-            watermark=True,  # Always watermark — remove on payment
+            watermark=True,
+            music_style=job.music_style,
+            width=vid_width,
+            height=vid_height,
+            subtitle_margin_v=subtitle_mv,
         )
 
         # Upload to R2

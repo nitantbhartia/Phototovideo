@@ -6,6 +6,7 @@ import { useRouter } from "next/navigation";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Progress } from "@/components/ui/progress";
+import { Textarea } from "@/components/ui/textarea";
 import {
   Select,
   SelectContent,
@@ -19,19 +20,31 @@ import {
   CheckCircle,
   Loader2,
   Film,
-  GripVertical,
   MapPin,
   Music,
   LayoutGrid,
+  Mic,
+  Monitor,
+  ArrowUp,
+  ArrowDown,
+  Pencil,
 } from "lucide-react";
 import Image from "next/image";
 
-type Step = "upload" | "details" | "generating" | "done";
+type Step = "upload" | "details" | "review" | "generating" | "done";
 
 interface SelectedFile {
   file: File;
   preview: string;
   id: string;
+}
+
+interface ReviewClip {
+  imageIndex: number;
+  imageKey: string;
+  roomLabel: string;
+  narration: string;
+  preview: string; // blob URL from the original file
 }
 
 interface PipelineStep {
@@ -56,6 +69,25 @@ const ESTIMATED_TIMES: Record<number, string> = {
   95: "Almost done...",
 };
 
+const VOICE_OPTIONS = [
+  { value: "rachel", label: "Rachel", description: "Warm, female" },
+  { value: "josh", label: "Josh", description: "Deep, male" },
+  { value: "bella", label: "Bella", description: "Soft, female" },
+  { value: "antoni", label: "Antoni", description: "Warm, male" },
+];
+
+const MUSIC_OPTIONS = [
+  { value: "ambient", label: "Ambient", description: "Soft & calming" },
+  { value: "upbeat", label: "Upbeat", description: "Energetic & modern" },
+  { value: "cinematic", label: "Cinematic", description: "Dramatic & luxurious" },
+];
+
+const ASPECT_RATIO_OPTIONS = [
+  { value: "16:9", label: "16:9", description: "Landscape (YouTube, MLS)" },
+  { value: "9:16", label: "9:16", description: "Vertical (Reels, TikTok)" },
+  { value: "1:1", label: "1:1", description: "Square (Instagram)" },
+];
+
 export function GenerateClient() {
   const router = useRouter();
   const [step, setStep] = useState<Step>("upload");
@@ -63,13 +95,19 @@ export function GenerateClient() {
   const [address, setAddress] = useState("");
   const [propertyType, setPropertyType] = useState("Single Family");
   const [tone, setTone] = useState("Warm & Inviting");
+  const [voiceId, setVoiceId] = useState("rachel");
+  const [musicStyle, setMusicStyle] = useState("ambient");
+  const [aspectRatio, setAspectRatio] = useState("16:9");
   const [autoSort, setAutoSort] = useState(true);
   const [addMusic, setAddMusic] = useState(true);
   const [isUploading, setIsUploading] = useState(false);
+  const [isPlanning, setIsPlanning] = useState(false);
   const [uploadError, setUploadError] = useState("");
   const [progress, setProgress] = useState(0);
   const [pipelineSteps, setPipelineSteps] = useState(PIPELINE_STEPS);
   const [videoId, setVideoId] = useState<string | null>(null);
+  const [uploadedKeys, setUploadedKeys] = useState<string[]>([]);
+  const [reviewClips, setReviewClips] = useState<ReviewClip[]>([]);
   const pollingRef = useRef<NodeJS.Timeout | null>(null);
 
   useEffect(() => {
@@ -112,12 +150,106 @@ export function GenerateClient() {
     });
   };
 
-  const handleGenerate = async () => {
+  // Upload photos and return keys + videoId
+  const uploadPhotos = async (): Promise<{ keys: string[]; videoId: string }> => {
+    const presignRes = await fetch("/api/upload/presign", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        files: files.map((f) => ({
+          name: f.file.name,
+          type: f.file.type,
+          size: f.file.size,
+        })),
+      }),
+    });
+
+    if (!presignRes.ok) throw new Error("Failed to get upload URLs");
+    const { keys, videoId: newVideoId } = await presignRes.json();
+
+    const uploadResults = await Promise.all(
+      keys.map(async (key: string, i: number) => {
+        const res = await fetch(`/api/upload/file?key=${encodeURIComponent(key)}`, {
+          method: "POST",
+          body: files[i].file,
+          headers: { "Content-Type": files[i].file.type },
+        });
+        return res.ok;
+      })
+    );
+
+    if (uploadResults.some((ok: boolean) => !ok)) {
+      throw new Error("Failed to upload one or more photos");
+    }
+
+    return { keys, videoId: newVideoId };
+  };
+
+  // Edit-before-render: upload → get AI plan → show review step
+  const handlePreviewEdit = async () => {
     if (!address.trim()) {
       setUploadError("Please enter the property address.");
       return;
     }
     if (files.length === 0) {
+      setUploadError("Please add at least one photo.");
+      return;
+    }
+
+    setIsPlanning(true);
+    setUploadError("");
+
+    try {
+      const { keys, videoId: newVideoId } = await uploadPhotos();
+      setVideoId(newVideoId);
+      setUploadedKeys(keys);
+
+      // Call the plan endpoint to get AI classifications + narrations
+      const planRes = await fetch("/api/videos/plan", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          videoId: newVideoId,
+          address,
+          propertyType,
+          tone,
+          imageKeys: keys,
+          autoSort,
+        }),
+      });
+
+      if (!planRes.ok) throw new Error("Failed to generate video plan");
+      const plan = await planRes.json();
+
+      if (plan.error) throw new Error(plan.error);
+
+      // Map plan clips to review clips with preview URLs
+      const clips: ReviewClip[] = plan.clips.map((clip: { imageIndex: number; imageKey: string; roomLabel: string; narration: string }) => ({
+        imageIndex: clip.imageIndex,
+        imageKey: clip.imageKey,
+        roomLabel: clip.roomLabel,
+        narration: clip.narration,
+        preview: clip.imageIndex < files.length ? files[clip.imageIndex].preview : "",
+      }));
+
+      setReviewClips(clips);
+      setStep("review");
+    } catch (err) {
+      setUploadError(
+        err instanceof Error ? err.message : "Failed to generate plan. Please try again."
+      );
+    } finally {
+      setIsPlanning(false);
+    }
+  };
+
+  // Direct generate (skip review)
+  const handleGenerate = async (editedClips?: { imageIndex: number; narration: string }[]) => {
+    if (!address.trim()) {
+      setUploadError("Please enter the property address.");
+      return;
+    }
+    if (files.length === 0 && !editedClips) {
       setUploadError("Please add at least one photo.");
       return;
     }
@@ -128,43 +260,22 @@ export function GenerateClient() {
     setProgress(5);
 
     try {
-      // Step 1: Get presigned URLs
-      const presignRes = await fetch("/api/upload/presign", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          files: files.map((f) => ({
-            name: f.file.name,
-            type: f.file.type,
-            size: f.file.size,
-          })),
-        }),
-      });
+      let keys = uploadedKeys;
+      let newVideoId = videoId;
 
-      if (!presignRes.ok) throw new Error("Failed to get upload URLs");
-      const { keys, videoId: newVideoId } = await presignRes.json();
-      setVideoId(newVideoId);
-
-      // Step 2: Upload through the app server to avoid browser->R2 CORS issues
-      setProgress(10);
-      const uploadResults = await Promise.all(
-        keys.map(async (key: string, i: number) => {
-          const res = await fetch(`/api/upload/file?key=${encodeURIComponent(key)}`, {
-            method: "POST",
-            body: files[i].file,
-            headers: { "Content-Type": files[i].file.type },
-          });
-          return res.ok;
-        })
-      );
-
-      if (uploadResults.some((ok) => !ok)) {
-        throw new Error("Failed to upload one or more photos");
+      // If coming from review step, photos are already uploaded
+      if (!keys.length) {
+        setProgress(10);
+        const uploaded = await uploadPhotos();
+        keys = uploaded.keys;
+        newVideoId = uploaded.videoId;
+        setVideoId(newVideoId);
+        setUploadedKeys(keys);
       }
 
       setProgress(20);
 
-      // Step 3: Dispatch video generation job
+      // Dispatch video generation job
       const videoRes = await fetch("/api/videos", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
@@ -173,18 +284,20 @@ export function GenerateClient() {
           address,
           propertyType,
           tone,
+          voiceId,
+          musicStyle,
+          aspectRatio,
           imageKeys: keys,
           autoSort,
           addMusic,
+          editedClips: editedClips || undefined,
         }),
       });
 
       if (!videoRes.ok) throw new Error("Failed to start video generation");
 
       setProgress(25);
-
-      // Step 4: Poll for status
-      startPolling(newVideoId);
+      startPolling(newVideoId!);
     } catch (err) {
       setUploadError(
         err instanceof Error ? err.message : "An error occurred. Please try again."
@@ -192,6 +305,29 @@ export function GenerateClient() {
       setStep("details");
       setIsUploading(false);
     }
+  };
+
+  // Generate from review step with edited clips
+  const handleGenerateFromReview = () => {
+    const edited = reviewClips.map((clip) => ({
+      imageIndex: clip.imageIndex,
+      narration: clip.narration,
+    }));
+    handleGenerate(edited);
+  };
+
+  const moveClip = (index: number, direction: "up" | "down") => {
+    const newClips = [...reviewClips];
+    const targetIndex = direction === "up" ? index - 1 : index + 1;
+    if (targetIndex < 0 || targetIndex >= newClips.length) return;
+    [newClips[index], newClips[targetIndex]] = [newClips[targetIndex], newClips[index]];
+    setReviewClips(newClips);
+  };
+
+  const updateNarration = (index: number, narration: string) => {
+    setReviewClips((prev) =>
+      prev.map((clip, i) => (i === index ? { ...clip, narration } : clip))
+    );
   };
 
   const startPolling = (id: string) => {
@@ -222,7 +358,6 @@ export function GenerateClient() {
           return;
         }
 
-        // Update progress based on status message
         if (data.statusMessage) {
           const stepMap: Record<string, number> = {
             classifying: 0,
@@ -247,7 +382,6 @@ export function GenerateClient() {
           }
         }
 
-        // Slowly advance progress
         currentProgress = Math.min(currentProgress + 1, 95);
         setProgress(currentProgress);
       } catch {
@@ -278,6 +412,7 @@ export function GenerateClient() {
     return () => window.clearTimeout(timeout);
   }, [router, step, videoUrl]);
 
+  // ── Generating / Done screen ──
   if (step === "generating" || step === "done") {
     return (
       <div className="p-6 md:p-12 max-w-2xl mx-auto">
@@ -308,7 +443,6 @@ export function GenerateClient() {
           </>
         )}
 
-        {/* Pipeline steps */}
         <div className="space-y-3 mb-8">
           {pipelineSteps.map((s, i) => (
             <div
@@ -376,6 +510,8 @@ export function GenerateClient() {
                 setProgress(0);
                 setPipelineSteps(PIPELINE_STEPS);
                 setVideoId(null);
+                setUploadedKeys([]);
+                setReviewClips([]);
               }}
             >
               Generate Another
@@ -386,6 +522,98 @@ export function GenerateClient() {
     );
   }
 
+  // ── Review / Edit step ──
+  if (step === "review") {
+    return (
+      <div className="p-6 md:p-8 max-w-3xl mx-auto">
+        <div className="mb-8">
+          <h1 className="font-serif text-2xl md:text-3xl font-bold text-charcoal mb-1">
+            Review & edit your video
+          </h1>
+          <p className="text-charcoal-600">
+            Reorder photos and edit the AI-generated narrations before rendering.
+          </p>
+        </div>
+
+        <div className="space-y-4 mb-8">
+          {reviewClips.map((clip, idx) => (
+            <div
+              key={`${clip.imageIndex}-${idx}`}
+              className="flex gap-4 p-4 border border-border rounded-xl bg-white"
+            >
+              {/* Reorder buttons */}
+              <div className="flex flex-col gap-1 justify-center">
+                <button
+                  onClick={() => moveClip(idx, "up")}
+                  disabled={idx === 0}
+                  className="p-1 rounded hover:bg-cream-100 disabled:opacity-20"
+                >
+                  <ArrowUp className="h-4 w-4" />
+                </button>
+                <span className="text-xs text-center text-charcoal-600 font-medium">
+                  {idx + 1}
+                </span>
+                <button
+                  onClick={() => moveClip(idx, "down")}
+                  disabled={idx === reviewClips.length - 1}
+                  className="p-1 rounded hover:bg-cream-100 disabled:opacity-20"
+                >
+                  <ArrowDown className="h-4 w-4" />
+                </button>
+              </div>
+
+              {/* Photo thumbnail */}
+              <div className="relative w-24 h-24 flex-shrink-0">
+                {clip.preview && (
+                  <Image
+                    src={clip.preview}
+                    alt={`Photo ${idx + 1}`}
+                    fill
+                    className="object-cover rounded-lg"
+                  />
+                )}
+                <div className="absolute bottom-1 left-1 px-1.5 py-0.5 rounded bg-black/60 text-white text-[10px]">
+                  {clip.roomLabel}
+                </div>
+              </div>
+
+              {/* Narration editor */}
+              <div className="flex-1 min-w-0">
+                <Textarea
+                  value={clip.narration}
+                  onChange={(e) => updateNarration(idx, e.target.value)}
+                  rows={3}
+                  className="text-sm resize-none"
+                  placeholder="Enter narration for this photo..."
+                />
+              </div>
+            </div>
+          ))}
+        </div>
+
+        <div className="flex gap-3">
+          <Button
+            variant="outline"
+            size="lg"
+            onClick={() => setStep("upload")}
+            className="flex-1"
+          >
+            Back to Edit
+          </Button>
+          <Button
+            size="lg"
+            onClick={handleGenerateFromReview}
+            className="flex-[2]"
+          >
+            <Film className="h-5 w-5 mr-2" />
+            Generate Video
+          </Button>
+        </div>
+      </div>
+    );
+  }
+
+  // ── Main form ──
   return (
     <div className="p-6 md:p-8 max-w-3xl mx-auto">
       <div className="mb-8">
@@ -523,6 +751,106 @@ export function GenerateClient() {
         </div>
       </section>
 
+      {/* Voice & Style */}
+      <section className="mb-8">
+        <h2 className="font-semibold text-charcoal mb-3 flex items-center gap-2">
+          <Mic className="h-4 w-4 text-gold" />
+          Voice & Style
+        </h2>
+
+        <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+          <div>
+            <label className="block text-sm font-medium text-charcoal mb-1.5">
+              Narrator Voice
+            </label>
+            <Select value={voiceId} onValueChange={setVoiceId}>
+              <SelectTrigger>
+                <SelectValue />
+              </SelectTrigger>
+              <SelectContent>
+                {VOICE_OPTIONS.map((v) => (
+                  <SelectItem key={v.value} value={v.value}>
+                    {v.label}
+                    <span className="text-charcoal-600 ml-1 text-xs">
+                      ({v.description})
+                    </span>
+                  </SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
+          </div>
+
+          <div>
+            <label className="block text-sm font-medium text-charcoal mb-1.5">
+              Music Style
+            </label>
+            <Select value={musicStyle} onValueChange={setMusicStyle}>
+              <SelectTrigger>
+                <SelectValue />
+              </SelectTrigger>
+              <SelectContent>
+                {MUSIC_OPTIONS.map((m) => (
+                  <SelectItem key={m.value} value={m.value}>
+                    {m.label}
+                    <span className="text-charcoal-600 ml-1 text-xs">
+                      ({m.description})
+                    </span>
+                  </SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
+          </div>
+        </div>
+      </section>
+
+      {/* Aspect Ratio */}
+      <section className="mb-8">
+        <h2 className="font-semibold text-charcoal mb-3 flex items-center gap-2">
+          <Monitor className="h-4 w-4 text-gold" />
+          Aspect Ratio
+        </h2>
+
+        <div className="grid grid-cols-3 gap-3">
+          {ASPECT_RATIO_OPTIONS.map((ar) => (
+            <button
+              key={ar.value}
+              onClick={() => setAspectRatio(ar.value)}
+              className={`p-3 rounded-xl border-2 text-center transition-all ${
+                aspectRatio === ar.value
+                  ? "border-gold bg-gold/5"
+                  : "border-border hover:border-gold/30"
+              }`}
+            >
+              <div className="flex justify-center mb-2">
+                <div
+                  className={`border-2 rounded-sm ${
+                    aspectRatio === ar.value
+                      ? "border-gold bg-gold/20"
+                      : "border-charcoal-600/30"
+                  }`}
+                  style={{
+                    width:
+                      ar.value === "16:9"
+                        ? 48
+                        : ar.value === "9:16"
+                        ? 27
+                        : 36,
+                    height:
+                      ar.value === "16:9"
+                        ? 27
+                        : ar.value === "9:16"
+                        ? 48
+                        : 36,
+                  }}
+                />
+              </div>
+              <p className="text-sm font-semibold text-charcoal">{ar.label}</p>
+              <p className="text-[11px] text-charcoal-600">{ar.description}</p>
+            </button>
+          ))}
+        </div>
+      </section>
+
       {/* Options */}
       <section className="mb-8">
         <h2 className="font-semibold text-charcoal mb-3 flex items-center gap-2">
@@ -553,31 +881,51 @@ export function GenerateClient() {
             />
             <span className="text-sm text-charcoal">
               Add background music
-              <span className="text-charcoal-600 ml-1">(soft ambient, 8% volume)</span>
             </span>
           </label>
         </div>
       </section>
 
-      {/* Generate button */}
-      <Button
-        size="xl"
-        className="w-full"
-        onClick={handleGenerate}
-        disabled={isUploading || files.length === 0 || !address.trim()}
-      >
-        {isUploading ? (
-          <>
-            <Loader2 className="h-5 w-5 mr-2 animate-spin" />
-            Uploading photos...
-          </>
-        ) : (
-          <>
-            <Film className="h-5 w-5 mr-2" />
-            Generate Video
-          </>
-        )}
-      </Button>
+      {/* Action buttons */}
+      <div className="flex gap-3">
+        <Button
+          size="xl"
+          variant="outline"
+          className="flex-1"
+          onClick={handlePreviewEdit}
+          disabled={isUploading || isPlanning || files.length === 0 || !address.trim()}
+        >
+          {isPlanning ? (
+            <>
+              <Loader2 className="h-5 w-5 mr-2 animate-spin" />
+              Planning...
+            </>
+          ) : (
+            <>
+              <Pencil className="h-5 w-5 mr-2" />
+              Preview & Edit
+            </>
+          )}
+        </Button>
+        <Button
+          size="xl"
+          className="flex-[2]"
+          onClick={() => handleGenerate()}
+          disabled={isUploading || isPlanning || files.length === 0 || !address.trim()}
+        >
+          {isUploading ? (
+            <>
+              <Loader2 className="h-5 w-5 mr-2 animate-spin" />
+              Uploading photos...
+            </>
+          ) : (
+            <>
+              <Film className="h-5 w-5 mr-2" />
+              Generate Video
+            </>
+          )}
+        </Button>
+      </div>
 
       <p className="mt-4 text-center text-xs text-charcoal-600">
         A watermarked preview will be generated — pay $49 to unlock the clean download.
