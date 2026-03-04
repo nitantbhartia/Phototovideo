@@ -558,6 +558,43 @@ def create_srt_file(clips: list[dict], srt_path: str):
             current_time = current_time + clip["clip_duration"] - settings.xfade_duration
 
 
+def ensure_background_music(track_duration: float, work_dir: str) -> str | None:
+    """Return a music track path, generating a soft ambient bed if no asset exists."""
+    bundled_music = os.path.join(os.path.dirname(__file__), "assets", "background.mp3")
+    if os.path.exists(bundled_music):
+        return bundled_music
+
+    generated_music = os.path.join(work_dir, "background-bed.wav")
+    fade_duration = min(1.5, max(track_duration / 6, 0.6))
+    fade_out_start = max(track_duration - fade_duration, 0)
+    synth_expr = (
+        "aevalsrc="
+        "0.020*sin(2*PI*220*t)+"
+        "0.012*sin(2*PI*277.18*t)+"
+        "0.010*sin(2*PI*329.63*t)|"
+        "0.020*sin(2*PI*220*t)+"
+        "0.012*sin(2*PI*277.18*t)+"
+        f"0.010*sin(2*PI*329.63*t):s=44100:d={track_duration:.3f}"
+    )
+
+    cmd = [
+        "ffmpeg", "-y",
+        "-f", "lavfi",
+        "-i", synth_expr,
+        "-af",
+        f"lowpass=f=1200,highpass=f=80,"
+        f"afade=t=in:st=0:d={fade_duration:.3f},"
+        f"afade=t=out:st={fade_out_start:.3f}:d={fade_duration:.3f}",
+        generated_music,
+    ]
+    result = subprocess.run(cmd, capture_output=True, text=True)
+    if result.returncode != 0:
+        logger.warning(f"Background music generation failed: {result.stderr[-500:]}")
+        return None
+
+    return generated_music
+
+
 def assemble_final_video(
     clips: list[dict],
     work_dir: str,
@@ -591,8 +628,11 @@ def assemble_final_video(
         "fontsize=24:x=w-tw-20:y=h-th-20:font=Arial"
     )
 
-    music_file = os.path.join(os.path.dirname(__file__), "assets", "background.mp3")
-    has_music_file = add_music and os.path.exists(music_file)
+    total_duration = sum(clip["clip_duration"] for clip in clips) - (
+        max(len(clips) - 1, 0) * settings.xfade_duration
+    )
+    music_file = ensure_background_music(total_duration, work_dir) if add_music else None
+    has_music_file = bool(music_file)
 
     if len(clips) == 1:
         filter_parts = [f"[0:v]{subtitle_filter}[vsub]"]
