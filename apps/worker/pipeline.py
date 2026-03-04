@@ -527,6 +527,7 @@ def render_clip(
     zoompan_filter = (
         f"zoompan=z='{z_expr}':x='{x_expr}':y='{y_expr}'"
         f":d={total_frames}:s={width}x{height}:fps={fps}"
+        f":filter_algo=bicubic"
     )
 
     # Light colour grade — no unsharp (amplifies JPEG artefacts on upscaled sources)
@@ -548,6 +549,9 @@ def render_clip(
         f"atrim=duration={clip_duration:.3f}"
     )
 
+    # Use near-lossless CRF 8 for intermediate clips — the final assembly
+    # re-encodes at the target CRF so encoding twice at CRF 18 was causing
+    # visible quality loss compared to the source photos.
     cmd = [
         "ffmpeg", "-y",
         "-i", image_path,
@@ -557,13 +561,12 @@ def render_clip(
         "-map", "[a]",
         "-c:v", "libx264",
         "-preset", "slow",
-        "-crf", str(settings.video_crf),
+        "-crf", "8",
         "-pix_fmt", "yuv420p",
         "-c:a", "aac",
         "-b:a", "192k",
         "-ar", "44100",
         "-t", f"{clip_duration:.3f}",
-        "-movflags", "+faststart",
         output_path,
     ]
 
