@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useCallback, useRef } from "react";
+import { useState, useCallback, useEffect, useRef } from "react";
 import { useDropzone } from "react-dropzone";
 import { useRouter } from "next/navigation";
 import { Button } from "@/components/ui/button";
@@ -71,6 +71,14 @@ export function GenerateClient() {
   const [pipelineSteps, setPipelineSteps] = useState(PIPELINE_STEPS);
   const [videoId, setVideoId] = useState<string | null>(null);
   const pollingRef = useRef<NodeJS.Timeout | null>(null);
+
+  useEffect(() => {
+    return () => {
+      if (pollingRef.current) {
+        clearInterval(pollingRef.current);
+      }
+    };
+  }, []);
 
   const onDrop = useCallback(
     (acceptedFiles: File[]) => {
@@ -197,6 +205,7 @@ export function GenerateClient() {
 
         if (data.status === "done") {
           clearInterval(pollingRef.current!);
+          pollingRef.current = null;
           setProgress(100);
           setPipelineSteps((prev) => prev.map((s) => ({ ...s, status: "done" })));
           setStep("done");
@@ -206,6 +215,7 @@ export function GenerateClient() {
 
         if (data.status === "error") {
           clearInterval(pollingRef.current!);
+          pollingRef.current = null;
           setUploadError(data.errorMessage || "Video generation failed.");
           setStep("details");
           setIsUploading(false);
@@ -253,6 +263,20 @@ export function GenerateClient() {
     }
     return "Calculating...";
   };
+
+  const videoUrl = videoId ? `/video/${videoId}` : null;
+
+  useEffect(() => {
+    if (step !== "done" || !videoUrl) {
+      return;
+    }
+
+    const timeout = window.setTimeout(() => {
+      router.push(videoUrl);
+    }, 1200);
+
+    return () => window.clearTimeout(timeout);
+  }, [router, step, videoUrl]);
 
   if (step === "generating" || step === "done") {
     return (
@@ -325,13 +349,22 @@ export function GenerateClient() {
 
         {step === "done" && videoId && (
           <div className="flex flex-col gap-3">
+            <p className="text-center text-sm text-charcoal-600 bg-cream-100 rounded-lg p-3">
+              Redirecting to your finished video...
+            </p>
             <Button
               size="lg"
               className="w-full"
-              onClick={() => router.push(`/video/${videoId}`)}
+              onClick={() => router.push(videoUrl!)}
             >
               Watch Your Video
             </Button>
+            <a
+              href={videoUrl!}
+              className="text-center text-sm text-charcoal-600 hover:text-charcoal underline underline-offset-4"
+            >
+              Open direct video link
+            </a>
             <Button
               size="lg"
               variant="outline"
