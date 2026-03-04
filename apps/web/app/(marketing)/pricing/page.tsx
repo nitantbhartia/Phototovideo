@@ -1,68 +1,22 @@
 import Link from "next/link";
 import { Button } from "@/components/ui/button";
-import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
-import { Check, Zap } from "lucide-react";
+import { Card, CardContent } from "@/components/ui/card";
+import { Check } from "lucide-react";
 
 export const metadata = {
   title: "Pricing",
-  description: "Simple, transparent pricing for AI real estate listing videos.",
+  description: "Professional AI listing videos for $49 per listing.",
 };
 
-const plans = [
-  {
-    name: "Pay-per-video",
-    price: "$49",
-    period: "per video",
-    description: "Perfect for agents testing the platform or occasional use.",
-    features: [
-      "1 professional listing video",
-      "AI room classification & sorting",
-      "Professional narrated voiceover",
-      "Cinematic Ken Burns effects",
-      "Background music",
-      "Watermark-free download",
-      "Shareable public link",
-      "Email delivery",
-    ],
-    cta: "Generate a Video",
-    href: "/generate",
-    highlighted: false,
-  },
-  {
-    name: "Starter",
-    price: "$99",
-    period: "per month",
-    description: "For independent agents with regular listings.",
-    badge: "Most Popular",
-    features: [
-      "10 videos per month",
-      "Everything in Pay-per-video",
-      "Priority rendering queue",
-      "Dashboard with video history",
-      "Bulk download",
-      "Cancel anytime",
-    ],
-    cta: "Start Starter Plan",
-    href: "/api/checkout?plan=starter",
-    highlighted: true,
-  },
-  {
-    name: "Pro",
-    price: "$249",
-    period: "per month",
-    description: "For teams and high-volume agents who need unlimited output.",
-    features: [
-      "Unlimited videos",
-      "Everything in Starter",
-      "Custom voice selection",
-      "Logo overlay / branding",
-      "Priority support",
-      "Team access (coming soon)",
-    ],
-    cta: "Start Pro Plan",
-    href: "/api/checkout?plan=pro",
-    highlighted: false,
-  },
+const features = [
+  "AI room classification & smart sorting",
+  "Professional narrated voiceover",
+  "Cinematic Ken Burns or AI-generated motion",
+  "Background music",
+  "Watermark-free HD download",
+  "Shareable public link",
+  "Multiple aspect ratios (16:9, 9:16, 1:1)",
+  "Email & SMS delivery",
 ];
 
 export default function PricingPage() {
@@ -72,87 +26,84 @@ export default function PricingPage() {
         {/* Header */}
         <div className="text-center mb-16">
           <h1 className="font-serif text-4xl md:text-5xl font-bold text-charcoal mb-4">
-            Transparent pricing
+            One price. One listing. Yours forever.
           </h1>
           <p className="text-charcoal-600 text-lg max-w-xl mx-auto">
             Professional videography costs $200–$500 per shoot. ListingReel
-            delivers the same result for a fraction of the price.
+            delivers the same result in minutes — no crew, no scheduling.
           </p>
         </div>
 
-        {/* Plans */}
-        <div className="grid grid-cols-1 md:grid-cols-3 gap-8 max-w-5xl mx-auto">
-          {plans.map((plan) => (
-            <Card
-              key={plan.name}
-              className={`relative flex flex-col ${
-                plan.highlighted
-                  ? "border-gold shadow-xl ring-2 ring-gold/20"
-                  : ""
-              }`}
-            >
-              {plan.badge && (
-                <div className="absolute -top-3 left-1/2 -translate-x-1/2">
-                  <span className="inline-flex items-center gap-1 bg-gold text-white text-xs font-semibold px-3 py-1 rounded-full">
-                    <Zap className="h-3 w-3" />
-                    {plan.badge}
-                  </span>
-                </div>
-              )}
-              <CardHeader className="pb-2">
-                <p className="text-sm font-medium text-charcoal-600 uppercase tracking-wider">
-                  {plan.name}
-                </p>
-                <div className="flex items-baseline gap-1 mt-2">
-                  <span className="font-serif text-4xl font-bold text-charcoal">
-                    {plan.price}
-                  </span>
-                  <span className="text-charcoal-600 text-sm">
-                    /{plan.period}
-                  </span>
-                </div>
-                <p className="text-sm text-charcoal-600 mt-2">
-                  {plan.description}
-                </p>
-              </CardHeader>
-              <CardContent className="flex flex-col flex-1 pt-4">
-                <ul className="space-y-3 flex-1">
-                  {plan.features.map((feature) => (
-                    <li key={feature} className="flex items-start gap-3">
-                      <div className="mt-0.5 h-5 w-5 rounded-full bg-gold/15 flex items-center justify-center flex-shrink-0">
-                        <Check className="h-3 w-3 text-gold-dark" />
-                      </div>
-                      <span className="text-sm text-charcoal-600">
-                        {feature}
-                      </span>
-                    </li>
-                  ))}
-                </ul>
-                <div className="mt-8">
-                  <Button
-                    asChild
-                    className="w-full"
-                    variant={plan.highlighted ? "default" : "outline"}
-                    size="lg"
-                  >
-                    <Link href={plan.href}>{plan.cta}</Link>
-                  </Button>
-                </div>
-              </CardContent>
-            </Card>
-          ))}
-        </div>
+        {/* Single pricing card */}
+        <Card className="max-w-md mx-auto border-gold shadow-xl ring-2 ring-gold/20">
+          <CardContent className="p-8">
+            <div className="text-center mb-8">
+              <div className="flex items-baseline justify-center gap-1">
+                <span className="font-serif text-5xl font-bold text-charcoal">
+                  $49
+                </span>
+                <span className="text-charcoal-600 text-sm">
+                  /listing
+                </span>
+              </div>
+              <p className="text-charcoal-600 text-sm mt-2">
+                One-time payment — no subscription, no hidden fees.
+              </p>
+            </div>
 
-        {/* Comparison note */}
-        <div className="mt-12 text-center">
-          <p className="text-sm text-charcoal-600">
-            All plans include AI narration, professional voiceover, and cinematic effects.
-            <br />
-            No contracts. Cancel anytime. Questions?{" "}
-            <a href="mailto:hello@listingreel.com" className="text-gold hover:underline">
-              Contact us
-            </a>
-          </p>
+            <ul className="space-y-3 mb-8">
+              {features.map((feature) => (
+                <li key={feature} className="flex items-start gap-3">
+                  <div className="mt-0.5 h-5 w-5 rounded-full bg-gold/15 flex items-center justify-center flex-shrink-0">
+                    <Check className="h-3 w-3 text-gold-dark" />
+                  </div>
+                  <span className="text-sm text-charcoal-600">{feature}</span>
+                </li>
+              ))}
+            </ul>
+
+            <Button asChild className="w-full" size="lg">
+              <Link href="/generate">Generate Your Video</Link>
+            </Button>
+
+            <p className="text-xs text-charcoal-600/60 text-center mt-4">
+              Preview with watermark for free. Pay only when you're happy.
+            </p>
+          </CardContent>
+        </Card>
+
+        {/* How it works */}
+        <div className="mt-20 max-w-2xl mx-auto">
+          <h2 className="font-serif text-2xl font-bold text-charcoal text-center mb-10">
+            How it works
+          </h2>
+          <div className="grid grid-cols-1 md:grid-cols-3 gap-8 text-center">
+            {[
+              {
+                step: "1",
+                title: "Upload photos",
+                desc: "Drag and drop your listing photos — we handle the rest.",
+              },
+              {
+                step: "2",
+                title: "Preview for free",
+                desc: "Watch your cinematic video with a watermarked preview.",
+              },
+              {
+                step: "3",
+                title: "Unlock for $49",
+                desc: "Remove the watermark and download the full HD video.",
+              },
+            ].map((item) => (
+              <div key={item.step}>
+                <div className="h-10 w-10 rounded-full bg-gold/15 flex items-center justify-center mx-auto mb-3">
+                  <span className="font-serif font-bold text-gold-dark">{item.step}</span>
+                </div>
+                <h3 className="font-semibold text-charcoal mb-1">{item.title}</h3>
+                <p className="text-sm text-charcoal-600">{item.desc}</p>
+              </div>
+            ))}
+          </div>
         </div>
 
         {/* FAQ */}
@@ -173,6 +124,16 @@ export default function PricingPage() {
             ))}
           </div>
         </div>
+
+        {/* Comparison note */}
+        <div className="mt-12 text-center">
+          <p className="text-sm text-charcoal-600">
+            Questions?{" "}
+            <a href="mailto:hello@listingreel.com" className="text-gold hover:underline">
+              Contact us
+            </a>
+          </p>
+        </div>
       </div>
     </div>
   );
@@ -180,23 +141,23 @@ export default function PricingPage() {
 
 const pricingFaqs = [
   {
-    question: "Do unused credits roll over?",
+    question: "Do I pay before or after seeing the video?",
     answer:
-      "Starter plan credits (10/month) reset each billing cycle. Unused credits do not roll over. Pay-per-video credits never expire.",
-  },
-  {
-    question: "Can I switch plans?",
-    answer:
-      "Yes, you can upgrade or downgrade at any time. Upgrades take effect immediately; downgrades take effect at the next billing cycle.",
+      "After. Every video generates a free watermarked preview. You only pay $49 when you want the clean, watermark-free download.",
   },
   {
     question: "What payment methods do you accept?",
     answer:
-      "We accept all major credit cards (Visa, Mastercard, Amex) via Stripe. Payments are processed securely — we never store card details.",
+      "All major credit cards (Visa, Mastercard, Amex) via Stripe. Payments are processed securely — we never store card details.",
   },
   {
-    question: "Is there a free trial?",
+    question: "Can I regenerate if I don't like the result?",
     answer:
-      "We don't offer a free trial, but every generated video includes a watermarked preview you can review before paying. You only pay if you want the clean, watermark-free download.",
+      "Yes. You can regenerate as many watermarked previews as you like at no cost. You only pay once you're satisfied.",
+  },
+  {
+    question: "Do you offer bulk or team pricing?",
+    answer:
+      "We're working on volume pricing for brokerages and teams. Reach out to hello@listingreel.com and we'll set you up.",
   },
 ];

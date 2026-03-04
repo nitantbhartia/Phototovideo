@@ -144,6 +144,7 @@ class VideoJob:
         self.image_keys = data["imageKeys"]
         self.auto_sort = data.get("autoSort", True)
         self.add_music = data.get("addMusic", True)
+        self.video_quality = data.get("videoQuality", "standard")  # "ai" or "standard"
         self.edited_clips = data.get("editedClips", None)
 
 
@@ -648,6 +649,257 @@ def get_audio_duration_ms(audio_path: str) -> int:
 
 
 # ─────────────────────────────────────────────
+# AI Video Generation (Luma / Runway)
+# ─────────────────────────────────────────────
+
+# Motion prompts per room type — tells the AI model how to animate the scene
+AI_MOTION_PROMPTS = {
+    "exterior": "Slow cinematic drone push-in toward the front entrance, gentle parallax on trees and landscaping",
+    "entryway": "Smooth forward dolly through the entryway, subtle light shift as entering the home",
+    "foyer": "Slow upward tilt revealing the ceiling height, gentle ambient light movement",
+    "living room": "Slow cinematic pan across the living room, natural light streaming through windows",
+    "family room": "Gentle pull-back revealing the full family room, subtle ambient movement",
+    "dining room": "Slow lateral dolly past the dining table, soft light playing on surfaces",
+    "kitchen": "Smooth forward push toward the kitchen island, subtle reflections on countertops",
+    "bedroom": "Gentle cinematic pan across the bedroom, soft curtain movement from breeze",
+    "master bedroom": "Slow reveal pan of the master suite, natural light shifting through windows",
+    "bathroom": "Slow push-in toward the vanity, subtle reflections on tile and glass surfaces",
+    "office": "Gentle dolly forward into the office space, soft ambient light movement",
+    "laundry": "Brief smooth pan across the laundry area, clean and well-lit",
+    "garage": "Slow pull-back revealing the full garage space, subtle shadow movement",
+    "backyard": "Slow cinematic pan across the backyard, gentle movement in trees and grass",
+    "outdoor": "Smooth outdoor dolly shot, natural breeze moving through vegetation",
+    "pool": "Slow cinematic push toward the pool, gentle water ripples and reflections",
+    "other": "Slow smooth cinematic camera movement, subtle ambient scene motion",
+}
+
+
+def _get_presigned_image_url(r2_client, image_path: str, video_id: str, clip_idx: int) -> str:
+    """Upload image to R2 and return a presigned URL for AI video gen APIs."""
+    temp_key = f"temp/{video_id}/clip_{clip_idx:03d}{Path(image_path).suffix}"
+    r2_client.upload_file(
+        image_path,
+        settings.r2_bucket_name,
+        temp_key,
+        ExtraArgs={"ContentType": get_image_media_type(image_path)},
+    )
+    url = r2_client.generate_presigned_url(
+        "get_object",
+        Params={"Bucket": settings.r2_bucket_name, "Key": temp_key},
+        ExpiresIn=600,  # 10 minutes — enough for AI gen
+    )
+    return url
+
+
+def generate_ai_video_luma(
+    image_url: str,
+    room_label: str,
+    output_path: str,
+) -> bool:
+    """Generate a video clip from a still image using Luma Dream Machine API."""
+    try:
+        from lumaai import LumaAI
+    except ImportError:
+        logger.warning("lumaai package not installed, falling back to Ken Burns")
+        return False
+
+    if not settings.lumaai_api_key:
+        return False
+
+    client = LumaAI(auth_token=settings.lumaai_api_key)
+    motion_prompt = AI_MOTION_PROMPTS.get(room_label.lower(), AI_MOTION_PROMPTS["other"])
+    prompt = f"Real estate property interior photo. {motion_prompt}. Photorealistic, steady smooth camera, no distortion, no morphing."
+
+    try:
+        generation = client.generations.create(
+            prompt=prompt,
+            model=settings.lumaai_model,
+            keyframes={
+                "frame0": {
+                    "type": "image",
+                    "url": image_url,
+                }
+            },
+            duration=settings.video_gen_duration,
+            resolution="1080p",
+        )
+
+        # Poll for completion (max 3 minutes)
+        import time
+        for _ in range(90):
+            time.sleep(2)
+            generation = client.generations.get(id=generation.id)
+            if generation.state == "completed":
+                break
+            if generation.state == "failed":
+                logger.warning(f"Luma generation failed: {generation.failure_reason}")
+                return False
+        else:
+            logger.warning("Luma generation timed out after 3 minutes")
+            return False
+
+        # Download the generated video
+        video_url = generation.assets.video
+        if not video_url:
+            return False
+
+        response = httpx.get(video_url, timeout=60, follow_redirects=True)
+        response.raise_for_status()
+        with open(output_path, "wb") as f:
+            f.write(response.content)
+
+        logger.info(f"Luma AI video generated: {output_path}")
+        return True
+
+    except Exception as e:
+        logger.warning(f"Luma AI video generation failed: {e}")
+        return False
+
+
+def generate_ai_video_runway(
+    image_url: str,
+    room_label: str,
+    output_path: str,
+) -> bool:
+    """Generate a video clip from a still image using Runway Gen-4 API."""
+    try:
+        from runwayml import RunwayML
+    except ImportError:
+        logger.warning("runwayml package not installed, falling back to Ken Burns")
+        return False
+
+    if not settings.runway_api_key:
+        return False
+
+    client = RunwayML(api_key=settings.runway_api_key)
+    motion_prompt = AI_MOTION_PROMPTS.get(room_label.lower(), AI_MOTION_PROMPTS["other"])
+    prompt = f"Real estate property photo. {motion_prompt}. Photorealistic, steady smooth camera, no distortion."
+
+    try:
+        task = client.image_to_video.create(
+            model=settings.runway_model,
+            prompt_image=image_url,
+            prompt_text=prompt,
+            duration=int(settings.video_gen_duration.replace("s", "")),
+            ratio="16:9",
+        )
+
+        # Poll for completion (max 3 minutes)
+        import time
+        for _ in range(90):
+            time.sleep(2)
+            task = client.tasks.retrieve(task.id)
+            if task.status == "SUCCEEDED":
+                break
+            if task.status == "FAILED":
+                logger.warning(f"Runway generation failed: {task.failure}")
+                return False
+        else:
+            logger.warning("Runway generation timed out after 3 minutes")
+            return False
+
+        # Download the generated video
+        video_url = task.output[0] if task.output else None
+        if not video_url:
+            return False
+
+        response = httpx.get(video_url, timeout=60, follow_redirects=True)
+        response.raise_for_status()
+        with open(output_path, "wb") as f:
+            f.write(response.content)
+
+        logger.info(f"Runway AI video generated: {output_path}")
+        return True
+
+    except Exception as e:
+        logger.warning(f"Runway AI video generation failed: {e}")
+        return False
+
+
+def generate_ai_video_clip(
+    r2_client,
+    image_path: str,
+    room_label: str,
+    video_id: str,
+    clip_idx: int,
+    output_path: str,
+) -> bool:
+    """
+    Generate an AI video clip from a still image.
+    Returns True if AI generation succeeded, False to fall back to Ken Burns.
+    """
+    provider = settings.video_gen_provider.lower()
+    if provider == "ken_burns":
+        return False
+
+    # Upload image to get a presigned URL for the API
+    image_url = _get_presigned_image_url(r2_client, image_path, video_id, clip_idx)
+
+    if provider == "luma":
+        return generate_ai_video_luma(image_url, room_label, output_path)
+    elif provider == "runway":
+        return generate_ai_video_runway(image_url, room_label, output_path)
+    else:
+        logger.warning(f"Unknown video gen provider: {provider}")
+        return False
+
+
+def composite_audio_on_video(
+    video_path: str,
+    audio_path: str,
+    clip_duration: float,
+    output_path: str,
+    width: int = 1920,
+    height: int = 1080,
+    fps: int = 24,
+):
+    """
+    Composite narration audio onto an AI-generated video clip.
+    Scales/crops to target resolution, adds audio with lead-in delay,
+    and applies fade in/out.
+    """
+    audio_delay_ms = int(settings.narration_lead_in * 1000)
+    fade_dur = 0.4
+    fade_out_start = max(clip_duration - fade_dur, 0)
+
+    video_filter = (
+        f"scale={width}:{height}:force_original_aspect_ratio=increase:flags=lanczos,"
+        f"crop={width}:{height},setsar=1,fps={fps},"
+        f"fade=t=in:st=0:d={fade_dur},"
+        f"fade=t=out:st={fade_out_start:.3f}:d={fade_dur}"
+    )
+    audio_filter = (
+        f"adelay={audio_delay_ms}|{audio_delay_ms},"
+        f"apad=pad_dur={clip_duration:.3f},"
+        f"atrim=duration={clip_duration:.3f}"
+    )
+
+    codec_args = get_video_codec_args(crf=8, preset="fast", intermediate=True)
+    cmd = [
+        "ffmpeg", "-y",
+        "-i", video_path,
+        "-i", audio_path,
+        "-filter_complex",
+        f"[0:v]{video_filter}[v];[1:a]{audio_filter}[a]",
+        "-map", "[v]",
+        "-map", "[a]",
+        *codec_args,
+        "-c:a", "aac",
+        "-b:a", "192k",
+        "-ar", "44100",
+        "-t", f"{clip_duration:.3f}",
+        output_path,
+    ]
+
+    try:
+        result = subprocess.run(cmd, capture_output=True, text=True, timeout=120)
+    except subprocess.TimeoutExpired:
+        raise RuntimeError(f"ffmpeg composite timed out for {output_path}")
+    if result.returncode != 0:
+        raise RuntimeError(f"ffmpeg composite failed: {result.stderr[-500:]}")
+
+
+# ─────────────────────────────────────────────
 # Codec helpers
 # ─────────────────────────────────────────────
 
@@ -898,26 +1150,63 @@ def render_all_clips(
     height: int = 1080,
     video_id: str | None = None,
     ar_label: str = "",
+    r2_client=None,
 ) -> list[dict]:
-    """Render all clips in parallel with room-aware motion styles."""
+    """Render all clips — AI video gen with Ken Burns fallback."""
     n = len(clips)
-    workers = min(settings.max_render_workers, n)
-    logger.info(f"Rendering {n} video clips ({workers} parallel workers)...")
+    use_ai = settings.video_gen_provider.lower() != "ken_burns" and r2_client is not None
+    workers = min(
+        settings.max_video_gen_workers if use_ai else settings.max_render_workers,
+        n,
+    )
+    method = f"AI ({settings.video_gen_provider})" if use_ai else "Ken Burns"
+    logger.info(f"Rendering {n} video clips via {method} ({workers} parallel workers)...")
     completed_count = 0
 
     def _render_one(i: int, clip: dict) -> tuple[int, str]:
         clip_path = os.path.join(work_dir, f"clip_{i:03d}.mp4")
-        motion = motion_for_room(clip.get("room_label", "other"), i)
-        render_clip(
-            image_path=clip["path"],
-            audio_path=clip["audio_path"],
-            clip_duration=clip["clip_duration"],
-            output_path=clip_path,
-            motion=motion,
-            width=width,
-            height=height,
-            fps=settings.video_fps,
-        )
+        room_label = clip.get("room_label", "other")
+        ai_success = False
+
+        # Try AI video generation first
+        if use_ai:
+            ai_raw_path = os.path.join(work_dir, f"ai_raw_{i:03d}.mp4")
+            ai_success = generate_ai_video_clip(
+                r2_client=r2_client,
+                image_path=clip["path"],
+                room_label=room_label,
+                video_id=video_id or "unknown",
+                clip_idx=i,
+                output_path=ai_raw_path,
+            )
+            if ai_success:
+                # Composite narration audio onto the AI-generated video
+                composite_audio_on_video(
+                    video_path=ai_raw_path,
+                    audio_path=clip["audio_path"],
+                    clip_duration=clip["clip_duration"],
+                    output_path=clip_path,
+                    width=width,
+                    height=height,
+                    fps=settings.video_fps,
+                )
+
+        # Fall back to Ken Burns if AI gen failed or not enabled
+        if not ai_success:
+            if use_ai:
+                logger.info(f"Clip {i}: AI gen failed, falling back to Ken Burns")
+            motion = motion_for_room(room_label, i)
+            render_clip(
+                image_path=clip["path"],
+                audio_path=clip["audio_path"],
+                clip_duration=clip["clip_duration"],
+                output_path=clip_path,
+                motion=motion,
+                width=width,
+                height=height,
+                fps=settings.video_fps,
+            )
+
         return i, clip_path
 
     with ThreadPoolExecutor(max_workers=workers) as pool:
@@ -1580,6 +1869,17 @@ def run_pipeline(job: VideoJob) -> PipelineResult:
             clips = generate_audio_elevenlabs(eleven, clips, work_dir, voice_id=job.voice_id)
 
         # ── Stages 4-5: Render + Assemble (once per aspect ratio)
+        # Per-job video quality override: "ai" enables AI video gen if API keys are configured.
+        # "standard" forces Ken Burns regardless of server default.
+        if job.video_quality == "ai" and settings.video_gen_provider == "ken_burns":
+            # User requested AI but server default is ken_burns — check if any API key is available
+            if settings.lumaai_api_key:
+                settings.video_gen_provider = "luma"
+            elif settings.runway_api_key:
+                settings.video_gen_provider = "runway"
+        elif job.video_quality == "standard":
+            settings.video_gen_provider = "ken_burns"
+
         aspect_ratios = job.aspect_ratios or ["16:9"]
         r2_keys = {}  # aspect_ratio -> r2_key
         primary_output = None
@@ -1604,7 +1904,7 @@ def run_pipeline(job: VideoJob) -> PipelineResult:
             with ThreadPoolExecutor(max_workers=3) as card_pool:
                 clips_future = card_pool.submit(
                     render_all_clips, clips, ar_dir, vid_width, vid_height,
-                    video_id=job.video_id, ar_label=ar_name,
+                    video_id=job.video_id, ar_label=ar_name, r2_client=r2,
                 )
                 intro_future = card_pool.submit(
                     render_intro_card,
