@@ -45,7 +45,7 @@ export async function sendVideoReadyEmail({
               <hr style="border: none; border-top: 1px solid #F5EDD0; margin: 32px 0;">
               <p style="color: #888; font-size: 12px; text-align: center;">
                 ListingReel — AI-powered real estate videos in minutes<br>
-                <a href="${process.env.NEXT_PUBLIC_APP_URL}" style="color: #C9A84C;">listingreel.com</a>
+                <a href="${process.env.NEXT_PUBLIC_APP_URL}" style="color: #C9A84C;">beforeafterpro.app</a>
               </p>
             </div>
           </div>
