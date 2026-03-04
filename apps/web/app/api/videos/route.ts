@@ -1,10 +1,10 @@
 import { NextRequest, NextResponse } from "next/server";
 import { getDb } from "@/lib/db";
-import { videos, users, videoClips } from "@/lib/db/schema";
+import { videos, users } from "@/lib/db/schema";
 import { eq, desc } from "drizzle-orm";
-import { dispatchVideoJob } from "@/lib/queue";
 import { z } from "zod";
 import { getClerkUserId, hasClerkEnv, isGuestMode } from "@/lib/auth";
+import { queueVideoGeneration } from "@/lib/video-jobs";
 
 const CreateVideoSchema = z.object({
   videoId: z.string().uuid(),
@@ -54,35 +54,7 @@ export async function POST(req: NextRequest) {
 
     // Billing is intentionally bypassed in guest/test mode.
 
-    // Update video record with address and details
-    await db
-      .update(videos)
-      .set({
-        address,
-        propertyType,
-        tone,
-        voiceId,
-        musicStyle,
-        aspectRatios: aspectRatios.join(","),
-        status: "queued",
-        statusMessage: "Job queued",
-        updatedAt: new Date(),
-      })
-      .where(eq(videos.id, videoId));
-
-    // Insert clip records (one per image, order determined by AI later)
-    const r2BaseUrl = process.env.R2_PUBLIC_URL;
-    await db.insert(videoClips).values(
-      imageKeys.map((key, i) => ({
-        videoId,
-        imageUrl: `${r2BaseUrl}/${key}`,
-        r2Key: key,
-        orderIndex: i,
-      }))
-    );
-
-    // Dispatch job to Railway worker via QStash
-    await dispatchVideoJob({
+    await queueVideoGeneration({
       videoId,
       userId: user.id,
       address,

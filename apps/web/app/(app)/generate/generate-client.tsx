@@ -52,6 +52,14 @@ interface PipelineStep {
   status: "pending" | "active" | "done";
 }
 
+interface VideoStatusResponse {
+  id: string;
+  status: "queued" | "processing" | "done" | "error";
+  statusMessage?: string | null;
+  errorMessage?: string | null;
+  shareId?: string;
+}
+
 const PIPELINE_STEPS: PipelineStep[] = [
   { label: "Classifying & sorting rooms", status: "pending" },
   { label: "Writing narrations", status: "pending" },
@@ -91,6 +99,34 @@ const ASPECT_RATIO_OPTIONS = [
   { value: "1:1", label: "1:1", description: "Square (Instagram)" },
 ];
 
+const STATUS_STAGE_PATTERNS = [
+  {
+    index: 0,
+    progress: 28,
+    patterns: ["downloading", "classifying", "sorting"],
+  },
+  {
+    index: 1,
+    progress: 44,
+    patterns: ["narration", "narrations", "writing"],
+  },
+  {
+    index: 2,
+    progress: 60,
+    patterns: ["voiceover", "audio", "recording"],
+  },
+  {
+    index: 3,
+    progress: 78,
+    patterns: ["rendering", "render 16:9", "render 9:16", "render 1:1"],
+  },
+  {
+    index: 4,
+    progress: 92,
+    patterns: ["assembling", "uploading", "thumbnail", "video ready"],
+  },
+] as const;
+
 export function GenerateClient() {
   const router = useRouter();
   const [step, setStep] = useState<Step>("upload");
@@ -112,14 +148,26 @@ export function GenerateClient() {
   const [uploadedKeys, setUploadedKeys] = useState<string[]>([]);
   const [reviewClips, setReviewClips] = useState<ReviewClip[]>([]);
   const pollingRef = useRef<NodeJS.Timeout | null>(null);
+  const pollingTokenRef = useRef(0);
+
+  const resetPipelineState = useCallback(() => {
+    setProgress(0);
+    setPipelineSteps(PIPELINE_STEPS);
+  }, []);
+
+  const stopPolling = useCallback(() => {
+    pollingTokenRef.current += 1;
+    if (pollingRef.current) {
+      clearInterval(pollingRef.current);
+      pollingRef.current = null;
+    }
+  }, []);
 
   useEffect(() => {
     return () => {
-      if (pollingRef.current) {
-        clearInterval(pollingRef.current);
-      }
+      stopPolling();
     };
-  }, []);
+  }, [stopPolling]);
 
   const onDrop = useCallback(
     (acceptedFiles: File[]) => {
@@ -260,6 +308,8 @@ export function GenerateClient() {
     setIsUploading(true);
     setUploadError("");
     setStep("generating");
+    stopPolling();
+    resetPipelineState();
     setProgress(5);
 
     try {
@@ -302,6 +352,7 @@ export function GenerateClient() {
       setProgress(25);
       startPolling(newVideoId!);
     } catch (err) {
+      stopPolling();
       setUploadError(
         err instanceof Error ? err.message : "An error occurred. Please try again."
       );
@@ -334,17 +385,23 @@ export function GenerateClient() {
   };
 
   const startPolling = (id: string) => {
+    stopPolling();
+    const pollingToken = pollingTokenRef.current + 1;
+    pollingTokenRef.current = pollingToken;
     let currentProgress = 25;
 
     pollingRef.current = setInterval(async () => {
       try {
         const res = await fetch(`/api/videos/${id}`);
         if (!res.ok) return;
-        const data = await res.json();
+        const data = (await res.json()) as VideoStatusResponse;
+
+        if (pollingTokenRef.current !== pollingToken) {
+          return;
+        }
 
         if (data.status === "done") {
-          clearInterval(pollingRef.current!);
-          pollingRef.current = null;
+          stopPolling();
           setProgress(100);
           setPipelineSteps((prev) => prev.map((s) => ({ ...s, status: "done" })));
           setStep("done");
@@ -353,33 +410,29 @@ export function GenerateClient() {
         }
 
         if (data.status === "error") {
-          clearInterval(pollingRef.current!);
-          pollingRef.current = null;
+          stopPolling();
           setUploadError(data.errorMessage || "Video generation failed.");
           setStep("details");
           setIsUploading(false);
           return;
         }
 
-        if (data.statusMessage) {
-          const stepMap: Record<string, number> = {
-            classifying: 0,
-            narration: 1,
-            voiceover: 2,
-            rendering: 3,
-            assembling: 4,
-          };
-
-          for (const [keyword, stepIdx] of Object.entries(stepMap)) {
-            if (data.statusMessage.toLowerCase().includes(keyword)) {
+        // Update progress based on status message
+        if (data.status === "queued") {
+          setPipelineSteps(PIPELINE_STEPS);
+          currentProgress = Math.max(currentProgress, 25);
+        } else if (data.statusMessage) {
+          const normalizedStatus = data.statusMessage.toLowerCase();
+          for (const stage of STATUS_STAGE_PATTERNS) {
+            if (stage.patterns.some((pattern) => normalizedStatus.includes(pattern))) {
               setPipelineSteps((prev) =>
                 prev.map((s, i) => ({
                   ...s,
                   status:
-                    i < stepIdx ? "done" : i === stepIdx ? "active" : "pending",
+                    i < stage.index ? "done" : i === stage.index ? "active" : "pending",
                 }))
               );
-              currentProgress = Math.max(currentProgress, 25 + stepIdx * 15);
+              currentProgress = Math.max(currentProgress, stage.progress);
               break;
             }
           }
@@ -507,11 +560,11 @@ export function GenerateClient() {
               variant="outline"
               className="w-full"
               onClick={() => {
+                stopPolling();
                 setStep("upload");
                 setFiles([]);
                 setAddress("");
-                setProgress(0);
-                setPipelineSteps(PIPELINE_STEPS);
+                resetPipelineState();
                 setVideoId(null);
                 setUploadedKeys([]);
                 setReviewClips([]);

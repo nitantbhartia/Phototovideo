@@ -1,12 +1,8 @@
 import { NextRequest, NextResponse } from "next/server";
 import { generatePresignedUploadUrl, generateImageKey } from "@/lib/r2";
-import { getDb } from "@/lib/db";
-import { videos, users, videoClips } from "@/lib/db/schema";
-import { eq } from "drizzle-orm";
-import { generateShareId } from "@/lib/utils";
-import { randomUUID } from "crypto";
 import { z } from "zod";
 import { getClerkUserId, hasClerkEnv, isGuestMode } from "@/lib/auth";
+import { createDraftVideo, getOrCreateUser } from "@/lib/video-jobs";
 
 const PresignSchema = z.object({
   files: z
@@ -23,7 +19,6 @@ const PresignSchema = z.object({
 
 export async function POST(req: NextRequest) {
   try {
-    const db = getDb();
     const guestMode = isGuestMode();
     const clerkId = guestMode || !hasClerkEnv() ? "guest-test-user" : await getClerkUserId();
     if (!clerkId) {
@@ -41,36 +36,8 @@ export async function POST(req: NextRequest) {
 
     const { files } = parsed.data;
 
-    // Get or create user
-    let user = await db.query.users.findFirst({
-      where: eq(users.clerkId, clerkId),
-    });
-
-    if (!user) {
-      const [newUser] = await db
-        .insert(users)
-        .values({
-          clerkId,
-          email: "",
-          plan: "free",
-          credits: 0,
-        })
-        .returning();
-      user = newUser;
-    }
-
-    // Create video record
-    const videoId = randomUUID();
-    const shareId = generateShareId();
-
-    await db.insert(videos).values({
-      id: videoId,
-      userId: user.id,
-      address: "",
-      status: "queued",
-      shareId,
-      watermarked: true,
-    });
+    const user = await getOrCreateUser({ clerkId, email: "" });
+    const { videoId } = await createDraftVideo(user.id);
 
     // Generate presigned URLs for each file
     const keys: string[] = [];
