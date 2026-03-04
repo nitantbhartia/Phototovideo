@@ -525,9 +525,8 @@ def render_clip(
         y_expr = f"(ih-ih/zoom)/2"
 
     zoompan_filter = (
-        f"zoompan=z='{z_expr}':x='{x_expr}':y='{y_expr}'"
+        f"zoompan=z={z_expr}:x={x_expr}:y={y_expr}"
         f":d={total_frames}:s={width}x{height}:fps={fps}"
-        f":filter_algo=bicubic"
     )
 
     # Cinematic colour grade: warm highlights, lifted blacks, gentle saturation.
