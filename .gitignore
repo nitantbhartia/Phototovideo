@@ -7,6 +7,9 @@ node_modules/
 apps/web/.next/
 apps/web/out/
 
+# TypeScript build info
+*.tsbuildinfo
+
 # Production builds
 dist/
 build/
