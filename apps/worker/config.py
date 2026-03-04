@@ -31,6 +31,7 @@ class Settings(BaseSettings):
     video_gen_provider: str = "luma"
     lumaai_api_key: str | None = None
     lumaai_model: str = "ray-2"  # "ray-2" for higher quality, "ray-flash-2" for speed
+    lumaai_resolution: str = "720p"  # "540p", "720p", "1080p", "4k"
     runway_api_key: str | None = None
     runway_model: str = "gen4_turbo"  # "gen3a_turbo" for cheaper
     video_gen_duration: str = "5s"  # AI video clip duration

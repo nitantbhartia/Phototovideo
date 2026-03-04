@@ -721,7 +721,7 @@ def generate_ai_video_luma(
                 }
             },
             duration=settings.video_gen_duration,
-            resolution="1080p",
+            resolution=settings.lumaai_resolution,
         )
 
         # Poll for completion (max 3 minutes)
