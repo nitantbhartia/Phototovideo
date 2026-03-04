@@ -2,7 +2,11 @@ from pydantic_settings import BaseSettings
 
 
 class Settings(BaseSettings):
-    anthropic_api_key: str
+    llm_provider: str = "anthropic"
+    anthropic_api_key: str | None = None
+    anthropic_model: str = "claude-opus-4-5"
+    gemini_api_key: str | None = None
+    gemini_model: str = "gemini-2.5-flash-lite"
     elevenlabs_api_key: str
     database_url: str
     upstash_redis_url: str

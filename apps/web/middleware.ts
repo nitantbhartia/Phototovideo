@@ -11,8 +11,9 @@ const isProtectedRoute = createRouteMatcher([
 
 const hasClerkEnv =
   !!process.env.NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY && !!process.env.CLERK_SECRET_KEY;
+const guestMode = process.env.GUEST_MODE === "true";
 
-const middleware = hasClerkEnv
+const middleware = hasClerkEnv && !guestMode
   ? clerkMiddleware((auth, req) => {
       if (isProtectedRoute(req)) {
         auth().protect();

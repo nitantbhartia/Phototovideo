@@ -13,7 +13,10 @@ interface Params {
 export async function GET(req: NextRequest, { params }: Params) {
   try {
     const db = getDb();
-    const { userId: clerkId } = auth();
+    const guestMode = process.env.GUEST_MODE === "true";
+    const hasClerkEnv =
+      !!process.env.NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY && !!process.env.CLERK_SECRET_KEY;
+    const clerkId = guestMode || !hasClerkEnv ? null : auth().userId;
 
     const video = await db.query.videos.findFirst({
       where: eq(videos.id, params.id),
@@ -26,7 +29,7 @@ export async function GET(req: NextRequest, { params }: Params) {
 
     // Allow unauthenticated access to status only (for polling during generation)
     // but only if the user owns it (clerkId must match)
-    if (clerkId && video.user.clerkId !== clerkId) {
+    if (!guestMode && clerkId && video.user.clerkId !== clerkId) {
       return NextResponse.json({ error: "Forbidden" }, { status: 403 });
     }
 
@@ -74,7 +77,10 @@ export async function GET(req: NextRequest, { params }: Params) {
 export async function DELETE(req: NextRequest, { params }: Params) {
   try {
     const db = getDb();
-    const { userId: clerkId } = auth();
+    const guestMode = process.env.GUEST_MODE === "true";
+    const hasClerkEnv =
+      !!process.env.NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY && !!process.env.CLERK_SECRET_KEY;
+    const clerkId = guestMode || !hasClerkEnv ? "guest-test-user" : auth().userId;
     if (!clerkId) {
       return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
     }
@@ -88,7 +94,7 @@ export async function DELETE(req: NextRequest, { params }: Params) {
       return NextResponse.json({ error: "Video not found" }, { status: 404 });
     }
 
-    if (video.user.clerkId !== clerkId) {
+    if (!guestMode && video.user.clerkId !== clerkId) {
       return NextResponse.json({ error: "Forbidden" }, { status: 403 });
     }
 

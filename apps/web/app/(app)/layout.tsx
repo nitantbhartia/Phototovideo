@@ -9,6 +9,54 @@ export default async function AppLayout({
 }: {
   children: React.ReactNode;
 }) {
+  const guestMode = process.env.GUEST_MODE === "true";
+  const hasClerkEnv =
+    !!process.env.NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY && !!process.env.CLERK_SECRET_KEY;
+
+  if (guestMode || !hasClerkEnv) {
+    return (
+      <div className="min-h-screen flex">
+        <aside className="hidden md:flex w-64 flex-col fixed inset-y-0 bg-charcoal text-cream-50">
+          <div className="flex h-16 items-center px-6 border-b border-cream-100/10">
+            <Link href="/" className="flex items-center gap-2">
+              <div className="h-7 w-7 rounded bg-gold/20 flex items-center justify-center">
+                <Film className="h-4 w-4 text-gold" />
+              </div>
+              <span className="font-serif text-lg font-bold text-cream-50 tracking-wide">
+                ListingReel
+              </span>
+            </Link>
+          </div>
+
+          <nav className="flex-1 px-4 py-6 space-y-1">
+            <NavLink href="/generate" icon={PlusCircle}>
+              Create Video
+            </NavLink>
+          </nav>
+
+          <div className="px-4 py-4 border-t border-cream-100/10">
+            <p className="text-sm font-medium text-cream-100">Guest Test Mode</p>
+            <p className="text-xs text-cream-200/60">
+              Auth, email, and billing are bypassed.
+            </p>
+          </div>
+        </aside>
+
+        <div className="flex-1 md:ml-64 flex flex-col min-h-screen">
+          <header className="md:hidden flex h-14 items-center justify-between px-4 border-b border-border bg-charcoal">
+            <Link href="/" className="flex items-center gap-2">
+              <Film className="h-5 w-5 text-gold" />
+              <span className="font-serif font-bold text-cream-50">ListingReel</span>
+            </Link>
+            <span className="text-xs text-cream-200/70">Guest Test Mode</span>
+          </header>
+
+          <main className="flex-1 bg-cream-50">{children}</main>
+        </div>
+      </div>
+    );
+  }
+
   const user = await currentUser();
   if (!user) redirect("/sign-in");
 

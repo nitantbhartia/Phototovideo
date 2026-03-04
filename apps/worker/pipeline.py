@@ -9,7 +9,6 @@ Runs on Railway. Executes 5 sequential stages:
 """
 
 import os
-import io
 import json
 import base64
 import logging
@@ -24,6 +23,8 @@ import boto3
 from anthropic import Anthropic
 from elevenlabs.client import ElevenLabs
 from elevenlabs import VoiceSettings
+from google import genai
+from google.genai import types as genai_types
 from PIL import Image
 
 from config import settings
@@ -118,7 +119,7 @@ def download_image(r2_client, key: str, dest_path: str) -> bool:
 
 
 def encode_image_base64(path: str) -> str:
-    """Encode image to base64 for Claude API."""
+    """Encode image to base64."""
     with open(path, "rb") as f:
         return base64.standard_b64encode(f.read()).decode("utf-8")
 
@@ -142,12 +143,111 @@ def convert_to_jpeg(src: str, dest: str):
     img.save(dest, "JPEG", quality=92)
 
 
+def extract_json_response(raw: str) -> str:
+    raw = raw.strip()
+    if "```" in raw:
+        raw = raw.split("```")[1].replace("json", "").strip()
+    return raw
+
+
+def create_llm_client():
+    provider = settings.llm_provider.lower()
+
+    if provider == "anthropic":
+        if not settings.anthropic_api_key:
+            raise RuntimeError("ANTHROPIC_API_KEY is not configured")
+        return provider, Anthropic(api_key=settings.anthropic_api_key)
+
+    if provider == "gemini":
+        if not settings.gemini_api_key:
+            raise RuntimeError("GEMINI_API_KEY is not configured")
+        return provider, genai.Client(api_key=settings.gemini_api_key)
+
+    raise RuntimeError(f"Unsupported LLM_PROVIDER: {settings.llm_provider}")
+
+
+def generate_multimodal_json(
+    provider: str,
+    client,
+    prompt: str,
+    image_paths: list[str],
+    max_tokens: int,
+) -> list[dict]:
+    converted_paths = []
+
+    try:
+        if provider == "anthropic":
+            content = []
+            for i, path in enumerate(image_paths):
+                jpeg_path = path.replace(Path(path).suffix, f"_{i:03d}_conv.jpg")
+                convert_to_jpeg(path, jpeg_path)
+                converted_paths.append(jpeg_path)
+
+                content.append({"type": "text", "text": f"Image {i + 1}:"})
+                content.append({
+                    "type": "image",
+                    "source": {
+                        "type": "base64",
+                        "media_type": "image/jpeg",
+                        "data": encode_image_base64(jpeg_path),
+                    },
+                })
+
+            content.append({"type": "text", "text": prompt})
+
+            response = client.messages.create(
+                model=settings.anthropic_model,
+                max_tokens=max_tokens,
+                messages=[{"role": "user", "content": content}],
+            )
+            raw = response.content[0].text
+            return json.loads(extract_json_response(raw))
+
+        if provider == "gemini":
+            parts: list[object] = []
+            for i, path in enumerate(image_paths):
+                jpeg_path = path.replace(Path(path).suffix, f"_{i:03d}_conv.jpg")
+                convert_to_jpeg(path, jpeg_path)
+                converted_paths.append(jpeg_path)
+
+                with open(jpeg_path, "rb") as f:
+                    image_bytes = f.read()
+
+                parts.append(f"Image {i + 1}:")
+                parts.append(
+                    genai_types.Part.from_bytes(
+                        data=image_bytes,
+                        mime_type="image/jpeg",
+                    )
+                )
+
+            parts.append(prompt)
+
+            response = client.models.generate_content(
+                model=settings.gemini_model,
+                contents=parts,
+                config={
+                    "response_mime_type": "application/json",
+                    "temperature": 0.1,
+                    "max_output_tokens": max_tokens,
+                },
+            )
+            return json.loads(extract_json_response(response.text))
+
+        raise RuntimeError(f"Unsupported LLM provider: {provider}")
+    finally:
+        for jpeg_path in converted_paths:
+            if os.path.exists(jpeg_path):
+                os.unlink(jpeg_path)
+
+
 # ─────────────────────────────────────────────
 # Stage 1: Image Classification & Sort
 # ─────────────────────────────────────────────
 
 def classify_and_sort_images(
-    anthropic: Anthropic,
+    provider: str,
+    client,
     image_paths: list[str],
     address: str,
     property_type: str,
@@ -160,27 +260,6 @@ def classify_and_sort_images(
     action = "classifying and sorting" if auto_sort else "classifying"
     logger.info(f"{action.capitalize()} {len(image_paths)} images...")
 
-    content = []
-
-    # Build multi-image message
-    for i, path in enumerate(image_paths):
-        jpeg_path = path.replace(Path(path).suffix, "_conv.jpg")
-        convert_to_jpeg(path, jpeg_path)
-
-        content.append({
-            "type": "text",
-            "text": f"Image {i + 1}:",
-        })
-        content.append({
-            "type": "image",
-            "source": {
-                "type": "base64",
-                "media_type": "image/jpeg",
-                "data": encode_image_base64(jpeg_path),
-            },
-        })
-        os.unlink(jpeg_path)
-
     sort_instruction = (
         "Sort the results so they appear in optimal video order: exterior first, then "
         "interior rooms (living → dining → kitchen → bedrooms → bathrooms), then "
@@ -189,9 +268,7 @@ def classify_and_sort_images(
         else "Keep the results in the exact same order as the input images."
     )
 
-    content.append({
-        "type": "text",
-        "text": f"""You are analyzing {len(image_paths)} photos from a real estate listing at {address} ({property_type}).
+    prompt = f"""You are analyzing {len(image_paths)} photos from a real estate listing at {address} ({property_type}).
 
 For each image (numbered 1-{len(image_paths)}), identify the room or area shown.
 Use one of these labels: exterior, entryway, foyer, living room, family room, dining room, kitchen, bedroom, master bedroom, bathroom, office, laundry, garage, backyard, outdoor, pool, other.
@@ -200,21 +277,15 @@ Return a JSON array with exactly {len(image_paths)} objects in this format:
 [{{"image_index": 1, "room_label": "exterior", "confidence": 0.95}}, ...]
 
 {sort_instruction}
-Return ONLY the JSON array, no other text.""",
-    })
+Return ONLY the JSON array, no other text."""
 
-    response = anthropic.messages.create(
-        model="claude-opus-4-5",
+    classifications = generate_multimodal_json(
+        provider=provider,
+        client=client,
+        prompt=prompt,
+        image_paths=image_paths,
         max_tokens=1024,
-        messages=[{"role": "user", "content": content}],
     )
-
-    raw = response.content[0].text.strip()
-    # Extract JSON if wrapped
-    if "```" in raw:
-        raw = raw.split("```")[1].replace("json", "").strip()
-
-    classifications = json.loads(raw)
 
     # Sort by room order
     def room_sort_key(item):
@@ -248,7 +319,8 @@ Return ONLY the JSON array, no other text.""",
 # ─────────────────────────────────────────────
 
 def generate_narrations(
-    anthropic: Anthropic,
+    provider: str,
+    client,
     clips: list[dict],
     address: str,
     property_type: str,
@@ -259,28 +331,7 @@ def generate_narrations(
 
     tone_desc = TONE_PROMPTS.get(tone, TONE_PROMPTS["Warm & Inviting"])
 
-    content = []
-    for i, clip in enumerate(clips):
-        jpeg_path = clip["path"].replace(Path(clip["path"]).suffix, "_narr.jpg")
-        convert_to_jpeg(clip["path"], jpeg_path)
-
-        content.append({
-            "type": "text",
-            "text": f"Image {i + 1} ({clip['room_label']}):",
-        })
-        content.append({
-            "type": "image",
-            "source": {
-                "type": "base64",
-                "media_type": "image/jpeg",
-                "data": encode_image_base64(jpeg_path),
-            },
-        })
-        os.unlink(jpeg_path)
-
-    content.append({
-        "type": "text",
-        "text": f"""Write professional real estate narration for a listing video of {address} ({property_type}).
+    prompt = f"""Write professional real estate narration for a listing video of {address} ({property_type}).
 
 Tone: {tone_desc}
 
@@ -295,20 +346,15 @@ Rules:
 Return a JSON array with exactly {len(clips)} objects:
 [{{"image_index": 1, "narration": "Welcome to 123 Oak Street..."}}]
 
-Return ONLY the JSON array.""",
-    })
+Return ONLY the JSON array."""
 
-    response = anthropic.messages.create(
-        model="claude-opus-4-5",
+    narrations = generate_multimodal_json(
+        provider=provider,
+        client=client,
+        prompt=prompt,
+        image_paths=[clip["path"] for clip in clips],
         max_tokens=2048,
-        messages=[{"role": "user", "content": content}],
     )
-
-    raw = response.content[0].text.strip()
-    if "```" in raw:
-        raw = raw.split("```")[1].replace("json", "").strip()
-
-    narrations = json.loads(raw)
     narration_map = {item["image_index"]: item["narration"] for item in narrations}
 
     for i, clip in enumerate(clips):
@@ -711,7 +757,7 @@ def run_pipeline(job: VideoJob) -> PipelineResult:
     work_dir = tempfile.mkdtemp(prefix=f"listingreel_{job.video_id}_")
 
     try:
-        anthropic = Anthropic(api_key=settings.anthropic_api_key)
+        llm_provider, llm_client = create_llm_client()
         eleven = ElevenLabs(api_key=settings.elevenlabs_api_key)
         r2 = get_r2_client()
 
@@ -734,13 +780,13 @@ def run_pipeline(job: VideoJob) -> PipelineResult:
 
         # ── Stage 1: Classify and sort
         clips = classify_and_sort_images(
-            anthropic, image_paths, job.address, job.property_type, job.auto_sort
+            llm_provider, llm_client, image_paths, job.address, job.property_type, job.auto_sort
         )
 
         # ── Stage 2: Generate narrations
         report_status(job.video_id, "processing", "Writing narrations")
         clips = generate_narrations(
-            anthropic, clips, job.address, job.property_type, job.tone
+            llm_provider, llm_client, clips, job.address, job.property_type, job.tone
         )
 
         # ── Stage 3: TTS

@@ -19,7 +19,10 @@ const CreateVideoSchema = z.object({
 export async function POST(req: NextRequest) {
   try {
     const db = getDb();
-    const { userId: clerkId } = auth();
+    const guestMode = process.env.GUEST_MODE === "true";
+    const hasClerkEnv =
+      !!process.env.NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY && !!process.env.CLERK_SECRET_KEY;
+    const clerkId = guestMode || !hasClerkEnv ? "guest-test-user" : auth().userId;
     if (!clerkId) {
       return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
     }
@@ -43,10 +46,7 @@ export async function POST(req: NextRequest) {
       return NextResponse.json({ error: "User not found" }, { status: 404 });
     }
 
-    // Check credits (plan enforcement)
-    if (user.plan !== "pro" && user.credits <= 0) {
-      // Allow generation — user will pay before download
-    }
+    // Billing is intentionally bypassed in guest/test mode.
 
     // Update video record with address and details
     await db
@@ -97,7 +97,10 @@ export async function POST(req: NextRequest) {
 export async function GET(req: NextRequest) {
   try {
     const db = getDb();
-    const { userId: clerkId } = auth();
+    const guestMode = process.env.GUEST_MODE === "true";
+    const hasClerkEnv =
+      !!process.env.NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY && !!process.env.CLERK_SECRET_KEY;
+    const clerkId = guestMode || !hasClerkEnv ? "guest-test-user" : auth().userId;
     if (!clerkId) {
       return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
     }

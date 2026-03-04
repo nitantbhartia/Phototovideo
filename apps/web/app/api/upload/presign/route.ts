@@ -24,7 +24,10 @@ const PresignSchema = z.object({
 export async function POST(req: NextRequest) {
   try {
     const db = getDb();
-    const { userId: clerkId } = auth();
+    const guestMode = process.env.GUEST_MODE === "true";
+    const hasClerkEnv =
+      !!process.env.NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY && !!process.env.CLERK_SECRET_KEY;
+    const clerkId = guestMode || !hasClerkEnv ? "guest-test-user" : auth().userId;
     if (!clerkId) {
       return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
     }
