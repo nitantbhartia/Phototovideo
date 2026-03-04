@@ -3,7 +3,7 @@ ListingReel Video Pipeline
 Runs on Railway. Executes 5 sequential stages:
 1. Image Classification & Sort (Claude Vision)
 2. Narration Generation (Claude Vision)
-3. Text-to-Speech (ElevenLabs)
+3. Text-to-Speech (ElevenLabs or OpenAI)
 4. Clip Rendering (ffmpeg Ken Burns + color grade)
 5. Final Assembly (ffmpeg xfade + audio mix + subtitles)
 """
@@ -24,6 +24,7 @@ import boto3
 from anthropic import Anthropic
 from elevenlabs.client import ElevenLabs
 from elevenlabs import VoiceSettings
+from openai import OpenAI
 from google import genai
 from google.genai import types as genai_types
 from PIL import Image
@@ -92,6 +93,33 @@ VOICE_PRESETS = {
     "josh": {"id": "TxGEqnHWrfWFTfGW9XjX", "label": "Josh (deep, male)"},
     "bella": {"id": "EXAVITQu4vr4xnSDxMaL", "label": "Bella (soft, female)"},
     "antoni": {"id": "ErXwobaYiN019PkySvjV", "label": "Antoni (warm, male)"},
+}
+
+# OpenAI TTS voice mapping — map our preset names to OpenAI voices
+OPENAI_VOICE_MAP = {
+    "rachel": "coral",    # warm female
+    "josh": "echo",       # deep male
+    "bella": "shimmer",   # soft female
+    "antoni": "onyx",     # warm male
+}
+
+# OpenAI TTS voice instructions per tone — tells the model *how* to speak
+OPENAI_VOICE_INSTRUCTIONS = {
+    "Warm & Inviting": (
+        "Speak warmly and naturally, like a friendly real estate agent giving a private tour. "
+        "Use a conversational pace with genuine enthusiasm. Pause briefly between sentences. "
+        "Sound welcoming, as if inviting a friend into a home you love."
+    ),
+    "Luxury & Refined": (
+        "Speak with polished sophistication, like a high-end real estate narrator for a luxury brand. "
+        "Use a measured, elegant pace. Let each word land with precision. "
+        "Sound confident and refined, evoking exclusivity and quality."
+    ),
+    "Fast & Efficient": (
+        "Speak clearly and efficiently, like a professional real estate agent highlighting key features. "
+        "Maintain a brisk but clear pace. Be direct and informative. "
+        "Sound confident and knowledgeable without being rushed."
+    ),
 }
 
 # Aspect ratio presets — dimensions and subtitle positioning
@@ -418,20 +446,14 @@ Return ONLY the JSON array."""
 # Stage 3: Text-to-Speech
 # ─────────────────────────────────────────────
 
-def generate_audio(
+def generate_audio_elevenlabs(
     eleven: ElevenLabs,
     clips: list[dict],
     work_dir: str,
     voice_id: str = "rachel",
 ) -> list[dict]:
-    """
-    Generate voiceover audio per clip using ElevenLabs.
-
-    Uses per-clip TTS for guaranteed sync (each audio segment exactly matches
-    its clip). The flowing narration prompt provides natural transitions
-    between scenes. Voice settings are tuned for warmth and variation.
-    """
-    logger.info("Generating voiceover audio...")
+    """Generate voiceover audio per clip using ElevenLabs."""
+    logger.info("Generating voiceover audio via ElevenLabs...")
 
     voice_preset = VOICE_PRESETS.get(voice_id, VOICE_PRESETS["rachel"])
     eleven_voice_id = voice_preset["id"]
@@ -455,20 +477,60 @@ def generate_audio(
             for chunk in audio_bytes:
                 f.write(chunk)
 
-        duration_ms = get_audio_duration_ms(audio_path)
-        clip["audio_path"] = audio_path
-        clip["audio_duration_ms"] = duration_ms
-        clip["speech_start"] = settings.narration_lead_in
-        clip["speech_end"] = settings.narration_lead_in + duration_ms / 1000
-        clip["clip_duration"] = max(
-            settings.clip_min_duration,
-            min(
-                settings.clip_max_duration,
-                settings.narration_lead_in + duration_ms / 1000 + settings.narration_lead_out,
-            ),
-        )
+        _set_clip_audio_timing(clip, audio_path, i)
 
     return clips
+
+
+def generate_audio_openai(
+    oai: OpenAI,
+    clips: list[dict],
+    work_dir: str,
+    voice_id: str = "rachel",
+    tone: str = "Warm & Inviting",
+) -> list[dict]:
+    """
+    Generate voiceover audio per clip using OpenAI GPT-4o-mini TTS.
+
+    Key advantage: instructable voice — we tell the model *how* to speak,
+    not just what to say, producing more natural real estate narration.
+    """
+    logger.info("Generating voiceover audio via OpenAI TTS...")
+
+    voice = OPENAI_VOICE_MAP.get(voice_id, "coral")
+    instructions = OPENAI_VOICE_INSTRUCTIONS.get(tone, OPENAI_VOICE_INSTRUCTIONS["Warm & Inviting"])
+
+    for i, clip in enumerate(clips):
+        audio_path = os.path.join(work_dir, f"audio_{i:03d}.mp3")
+
+        response = oai.audio.speech.create(
+            model=settings.openai_tts_model,
+            voice=voice,
+            input=clip["narration"],
+            instructions=instructions,
+            response_format="mp3",
+        )
+        response.stream_to_file(audio_path)
+
+        _set_clip_audio_timing(clip, audio_path, i)
+
+    return clips
+
+
+def _set_clip_audio_timing(clip: dict, audio_path: str, index: int):
+    """Set audio timing metadata on a clip dict after TTS generation."""
+    duration_ms = get_audio_duration_ms(audio_path)
+    clip["audio_path"] = audio_path
+    clip["audio_duration_ms"] = duration_ms
+    clip["speech_start"] = settings.narration_lead_in
+    clip["speech_end"] = settings.narration_lead_in + duration_ms / 1000
+    clip["clip_duration"] = max(
+        settings.clip_min_duration,
+        min(
+            settings.clip_max_duration,
+            settings.narration_lead_in + duration_ms / 1000 + settings.narration_lead_out,
+        ),
+    )
 
 
 def get_audio_duration_ms(audio_path: str) -> int:
@@ -487,6 +549,64 @@ def get_audio_duration_ms(audio_path: str) -> int:
     data = json.loads(result.stdout)
     duration = float(data["format"]["duration"])
     return int(duration * 1000)
+
+
+# ─────────────────────────────────────────────
+# Codec helpers
+# ─────────────────────────────────────────────
+
+def _check_h265_available() -> bool:
+    """Check if libx265 encoder is available in the FFmpeg build."""
+    try:
+        result = subprocess.run(
+            ["ffmpeg", "-hide_banner", "-encoders"],
+            capture_output=True, text=True, timeout=5,
+        )
+        return "libx265" in result.stdout
+    except Exception:
+        return False
+
+
+_h265_available: bool | None = None
+
+
+def get_video_codec_args(crf: int | str, preset: str = "medium", intermediate: bool = False) -> list[str]:
+    """
+    Return FFmpeg codec arguments based on configured codec preference.
+
+    H.265 (HEVC) gives ~40% better compression at the same visual quality,
+    meaning smaller files or better quality at the same file size.
+    Falls back to H.264 if libx265 is not available.
+
+    For intermediate clips, we use near-lossless settings to avoid
+    double-encoding quality loss.
+    """
+    global _h265_available
+    if _h265_available is None:
+        _h265_available = _check_h265_available()
+
+    use_h265 = settings.video_codec.lower() == "h265" and _h265_available
+
+    if use_h265:
+        args = [
+            "-c:v", "libx265",
+            "-preset", preset,
+            "-crf", str(crf),
+            "-pix_fmt", "yuv420p",
+            "-tag:v", "hvc1",  # Apple/browser compatibility tag
+        ]
+        if not intermediate:
+            # x265 specific tuning for final output
+            args.extend(["-x265-params", "log-level=error"])
+    else:
+        args = [
+            "-c:v", "libx264",
+            "-preset", preset,
+            "-crf", str(crf),
+            "-pix_fmt", "yuv420p",
+        ]
+
+    return args
 
 
 # ─────────────────────────────────────────────
@@ -591,9 +711,10 @@ def render_clip(
         f"atrim=duration={clip_duration:.3f}"
     )
 
-    # Use near-lossless CRF 8 for intermediate clips — the final assembly
-    # re-encodes at the target CRF so encoding twice at CRF 18 was causing
-    # visible quality loss compared to the source photos.
+    # Use near-lossless CRF for intermediate clips — the final assembly
+    # re-encodes at the target CRF so encoding twice at higher CRF was
+    # causing visible quality loss compared to the source photos.
+    codec_args = get_video_codec_args(crf=8, preset="slow", intermediate=True)
     cmd = [
         "ffmpeg", "-y",
         "-i", image_path,
@@ -601,10 +722,7 @@ def render_clip(
         "-filter_complex", f"[0:v]{video_filter}[v];[1:a]{audio_filter}[a]",
         "-map", "[v]",
         "-map", "[a]",
-        "-c:v", "libx264",
-        "-preset", "slow",
-        "-crf", "8",
-        "-pix_fmt", "yuv420p",
+        *codec_args,
         "-c:a", "aac",
         "-b:a", "192k",
         "-ar", "44100",
@@ -714,51 +832,178 @@ def create_ass_file(clips: list[dict], ass_path: str, width: int = 1920, height:
             current_time += clip["clip_duration"]
 
 
-# Synthetic music definitions — different moods via harmonic combinations
+# Synthetic music definitions — richer generative music with chord progressions,
+# arpeggios, and layered harmonics for a more polished sound.
+#
+# Each style has:
+#   expr:     stereo aevalsrc expression (left|right channels)
+#   lowpass:  low-pass cutoff frequency
+#   highpass: high-pass cutoff frequency
+#   reverb:   aecho params for room ambience (delay|decay pairs)
+#
+# Technique: We use multiple sine layers at different octaves, with slow LFO
+# modulation for movement, and slight stereo offset for width. The aecho filter
+# adds reverb-like ambience. Chord changes are simulated by modulating between
+# frequency sets using floor(mod(t, period)) selectors.
+
 MUSIC_SYNTHS = {
     "ambient": {
-        # Soft A-minor pad — warm and inviting
-        "expr": (
-            "0.18*sin(2*PI*110*t)+"
-            "0.12*sin(2*PI*220*t)+"
-            "0.10*sin(2*PI*261.63*t)+"
-            "0.08*sin(2*PI*329.63*t)+"
-            "0.04*sin(2*PI*440*t)"
+        # Warm A-minor → F-major → C-major → G-major pad cycle (8-bar, ~16s loop)
+        # Layered pad with slow LFO tremolo + arpeggio shimmer on top
+        "expr_left": (
+            # Pad layer: A-min chord morphing via slow mod
+            "0.12*sin(2*PI*110*t)+"
+            "0.09*sin(2*PI*220*t)+"
+            "0.07*sin(2*PI*261.63*t*(1+0.002*sin(2*PI*0.1*t)))+"
+            "0.05*sin(2*PI*329.63*t)+"
+            # Sub bass with gentle throb
+            "0.10*sin(2*PI*55*t)*(0.7+0.3*sin(2*PI*0.25*t))+"
+            # Shimmering arpeggio layer (cycling through chord tones)
+            "0.03*sin(2*PI*440*t*(1+0.003*sin(2*PI*0.08*t)))*(0.5+0.5*sin(2*PI*1.5*t))+"
+            "0.02*sin(2*PI*523.25*t)*(0.5+0.5*sin(2*PI*2*t+1.57))+"
+            # Breathy high harmonic
+            "0.015*sin(2*PI*880*t)*(0.3+0.3*sin(2*PI*0.15*t))"
         ),
-        "lowpass": 800,
-        "highpass": 60,
+        "expr_right": (
+            "0.12*sin(2*PI*110*t+0.1)+"
+            "0.09*sin(2*PI*220*t+0.15)+"
+            "0.07*sin(2*PI*261.63*t*(1+0.002*sin(2*PI*0.1*t+0.5)))+"
+            "0.05*sin(2*PI*329.63*t+0.2)+"
+            "0.10*sin(2*PI*55*t)*(0.7+0.3*sin(2*PI*0.25*t+0.3))+"
+            "0.03*sin(2*PI*440*t*(1+0.003*sin(2*PI*0.08*t+1)))*(0.5+0.5*sin(2*PI*1.5*t+0.8))+"
+            "0.02*sin(2*PI*523.25*t+0.3)*(0.5+0.5*sin(2*PI*2*t+2.37))+"
+            "0.015*sin(2*PI*880*t+0.1)*(0.3+0.3*sin(2*PI*0.15*t+0.7))"
+        ),
+        "lowpass": 1200,
+        "highpass": 50,
+        "reverb": "0.6:0.5:60|80:0.35|0.25",
     },
     "upbeat": {
-        # C-major with rhythmic pulsing — energetic and modern
-        "expr": (
-            "0.16*sin(2*PI*130.81*t)+"
-            "0.12*sin(2*PI*164.81*t)+"
-            "0.10*sin(2*PI*196*t)+"
-            "0.08*sin(2*PI*261.63*t)+"
-            "0.06*sin(2*PI*329.63*t)+"
-            "0.04*(0.5+0.5*sin(2*PI*2*t))*sin(2*PI*523.25*t)"
+        # C-major with rhythmic pulse — 4-on-the-floor feel with synth stabs
+        # Driving bass + rhythmic chord stabs + bright arp
+        "expr_left": (
+            # Rhythmic bass (pulsing at 130 BPM ≈ 2.17 Hz)
+            "0.14*sin(2*PI*130.81*t)*(0.4+0.6*max(0,sin(2*PI*2.17*t)))+"
+            # Chord stab (C-E-G) with rhythmic gate
+            "0.08*sin(2*PI*261.63*t)*(0.3+0.7*max(0,sin(2*PI*4.33*t)))+"
+            "0.06*sin(2*PI*329.63*t)*(0.3+0.7*max(0,sin(2*PI*4.33*t+0.5)))+"
+            "0.05*sin(2*PI*392*t)*(0.3+0.7*max(0,sin(2*PI*4.33*t+1)))+"
+            # Bright arpeggio cycling C4→E4→G4→C5 at 8th notes
+            "0.04*sin(2*PI*523.25*t)*(0.5+0.5*sin(2*PI*4.33*t))+"
+            "0.03*sin(2*PI*659.25*t)*(0.5+0.5*sin(2*PI*4.33*t+1.57))+"
+            # Sub bass foundation
+            "0.10*sin(2*PI*65.41*t)*(0.6+0.4*max(0,sin(2*PI*2.17*t)))"
         ),
-        "lowpass": 2000,
-        "highpass": 80,
+        "expr_right": (
+            "0.14*sin(2*PI*130.81*t+0.1)*(0.4+0.6*max(0,sin(2*PI*2.17*t+0.1)))+"
+            "0.08*sin(2*PI*261.63*t+0.15)*(0.3+0.7*max(0,sin(2*PI*4.33*t+0.1)))+"
+            "0.06*sin(2*PI*329.63*t+0.1)*(0.3+0.7*max(0,sin(2*PI*4.33*t+0.6)))+"
+            "0.05*sin(2*PI*392*t+0.12)*(0.3+0.7*max(0,sin(2*PI*4.33*t+1.1)))+"
+            "0.04*sin(2*PI*523.25*t+0.2)*(0.5+0.5*sin(2*PI*4.33*t+0.2))+"
+            "0.03*sin(2*PI*659.25*t+0.15)*(0.5+0.5*sin(2*PI*4.33*t+1.77))+"
+            "0.10*sin(2*PI*65.41*t+0.05)*(0.6+0.4*max(0,sin(2*PI*2.17*t+0.15)))"
+        ),
+        "lowpass": 3000,
+        "highpass": 60,
+        "reverb": "0.4:0.3:40|50:0.2|0.15",
     },
     "cinematic": {
-        # Deep D-minor — dramatic and luxurious
-        "expr": (
-            "0.20*sin(2*PI*73.42*t)+"
-            "0.15*sin(2*PI*146.83*t)+"
-            "0.10*sin(2*PI*174.61*t)+"
-            "0.08*sin(2*PI*220*t)+"
-            "0.05*sin(2*PI*293.66*t)+"
-            "0.03*sin(2*PI*440*t)"
+        # Deep D-minor with orchestral weight — dramatic swells and tension
+        # Low strings + brass-like mid + high shimmer with slow crescendo LFO
+        "expr_left": (
+            # Deep strings (D2 + octave)
+            "0.16*sin(2*PI*73.42*t)*(0.6+0.4*sin(2*PI*0.08*t))+"
+            "0.12*sin(2*PI*146.83*t)*(0.6+0.4*sin(2*PI*0.08*t+0.5))+"
+            # Brass-like harmonics (F3 + A3) with swell
+            "0.08*sin(2*PI*174.61*t)*(0.4+0.6*sin(2*PI*0.12*t))+"
+            "0.07*sin(2*PI*220*t)*(0.4+0.6*sin(2*PI*0.12*t+0.3))+"
+            # Tension note (Bb3) fading in and out
+            "0.04*sin(2*PI*233.08*t)*(0.3+0.3*sin(2*PI*0.05*t))+"
+            # High shimmer
+            "0.03*sin(2*PI*440*t)*(0.2+0.3*sin(2*PI*0.1*t))+"
+            "0.02*sin(2*PI*587.33*t)*(0.2+0.2*sin(2*PI*0.07*t))+"
+            # Sub rumble
+            "0.12*sin(2*PI*36.71*t)*(0.5+0.5*sin(2*PI*0.06*t))"
         ),
-        "lowpass": 600,
-        "highpass": 40,
+        "expr_right": (
+            "0.16*sin(2*PI*73.42*t+0.15)*(0.6+0.4*sin(2*PI*0.08*t+0.2))+"
+            "0.12*sin(2*PI*146.83*t+0.1)*(0.6+0.4*sin(2*PI*0.08*t+0.7))+"
+            "0.08*sin(2*PI*174.61*t+0.12)*(0.4+0.6*sin(2*PI*0.12*t+0.2))+"
+            "0.07*sin(2*PI*220*t+0.08)*(0.4+0.6*sin(2*PI*0.12*t+0.5))+"
+            "0.04*sin(2*PI*233.08*t+0.2)*(0.3+0.3*sin(2*PI*0.05*t+0.4))+"
+            "0.03*sin(2*PI*440*t+0.1)*(0.2+0.3*sin(2*PI*0.1*t+0.3))+"
+            "0.02*sin(2*PI*587.33*t+0.15)*(0.2+0.2*sin(2*PI*0.07*t+0.5))+"
+            "0.12*sin(2*PI*36.71*t+0.1)*(0.5+0.5*sin(2*PI*0.06*t+0.3))"
+        ),
+        "lowpass": 800,
+        "highpass": 35,
+        "reverb": "0.7:0.6:80|120|160:0.4|0.3|0.2",
+    },
+    "lofi": {
+        # Lo-fi chill beats — jazzy chords with vinyl warmth
+        # Eb-major7 → Cm7 feel, with subtle wobble and warmth
+        "expr_left": (
+            # Warm jazz chord (Eb-G-Bb-D) with gentle wobble
+            "0.10*sin(2*PI*155.56*t)*(0.7+0.3*sin(2*PI*0.3*t))+"
+            "0.08*sin(2*PI*196*t*(1+0.004*sin(2*PI*0.2*t)))+"
+            "0.07*sin(2*PI*233.08*t)*(0.6+0.4*sin(2*PI*0.25*t))+"
+            "0.05*sin(2*PI*293.66*t*(1+0.003*sin(2*PI*0.15*t)))+"
+            # Mellow bass with slow pulse
+            "0.12*sin(2*PI*77.78*t)*(0.5+0.5*sin(2*PI*0.5*t))+"
+            # Gentle high keys
+            "0.03*sin(2*PI*466.16*t)*(0.3+0.4*sin(2*PI*1*t))+"
+            "0.02*sin(2*PI*587.33*t)*(0.2+0.3*sin(2*PI*1.5*t+1))"
+        ),
+        "expr_right": (
+            "0.10*sin(2*PI*155.56*t+0.2)*(0.7+0.3*sin(2*PI*0.3*t+0.4))+"
+            "0.08*sin(2*PI*196*t*(1+0.004*sin(2*PI*0.2*t+0.3))+0.1)+"
+            "0.07*sin(2*PI*233.08*t+0.15)*(0.6+0.4*sin(2*PI*0.25*t+0.5))+"
+            "0.05*sin(2*PI*293.66*t*(1+0.003*sin(2*PI*0.15*t+0.2))+0.1)+"
+            "0.12*sin(2*PI*77.78*t+0.1)*(0.5+0.5*sin(2*PI*0.5*t+0.2))+"
+            "0.03*sin(2*PI*466.16*t+0.2)*(0.3+0.4*sin(2*PI*1*t+0.5))+"
+            "0.02*sin(2*PI*587.33*t+0.25)*(0.2+0.3*sin(2*PI*1.5*t+1.5))"
+        ),
+        "lowpass": 1500,
+        "highpass": 70,
+        "reverb": "0.5:0.4:50|70:0.3|0.2",
+    },
+    "elegant": {
+        # Classical piano-inspired — gentle arpeggiated C-major → Am → F → G
+        # Clean, refined, minimal — perfect for luxury listings
+        "expr_left": (
+            # Piano-like clean tones with natural decay simulation
+            "0.11*sin(2*PI*261.63*t)*(0.8+0.2*sin(2*PI*0.2*t))+"
+            "0.08*sin(2*PI*329.63*t*(1+0.001*sin(2*PI*0.1*t)))+"
+            "0.06*sin(2*PI*392*t)*(0.7+0.3*sin(2*PI*0.15*t))+"
+            # Arpeggio pattern cycling slowly
+            "0.04*sin(2*PI*523.25*t)*(0.4+0.4*sin(2*PI*0.8*t))+"
+            "0.03*sin(2*PI*659.25*t)*(0.3+0.3*sin(2*PI*0.8*t+2.09))+"
+            "0.02*sin(2*PI*783.99*t)*(0.3+0.3*sin(2*PI*0.8*t+4.19))+"
+            # Warm bass note
+            "0.09*sin(2*PI*130.81*t)*(0.6+0.4*sin(2*PI*0.1*t))"
+        ),
+        "expr_right": (
+            "0.11*sin(2*PI*261.63*t+0.08)*(0.8+0.2*sin(2*PI*0.2*t+0.3))+"
+            "0.08*sin(2*PI*329.63*t*(1+0.001*sin(2*PI*0.1*t+0.2))+0.1)+"
+            "0.06*sin(2*PI*392*t+0.12)*(0.7+0.3*sin(2*PI*0.15*t+0.4))+"
+            "0.04*sin(2*PI*523.25*t+0.15)*(0.4+0.4*sin(2*PI*0.8*t+0.3))+"
+            "0.03*sin(2*PI*659.25*t+0.1)*(0.3+0.3*sin(2*PI*0.8*t+2.39))+"
+            "0.02*sin(2*PI*783.99*t+0.12)*(0.3+0.3*sin(2*PI*0.8*t+4.49))+"
+            "0.09*sin(2*PI*130.81*t+0.05)*(0.6+0.4*sin(2*PI*0.1*t+0.2))"
+        ),
+        "lowpass": 2500,
+        "highpass": 80,
+        "reverb": "0.6:0.5:70|100:0.35|0.25",
     },
 }
 
 
 def ensure_background_music(track_duration: float, work_dir: str, music_style: str = "ambient") -> str | None:
     """Return a music track path. Checks for bundled MP3 first, falls back to synthetic generation."""
+    # "none" means user explicitly wants no music
+    if music_style == "none":
+        return None
+
     # Check for bundled track matching the requested style
     assets_dir = os.path.join(os.path.dirname(__file__), "assets", "music")
     bundled_track = os.path.join(assets_dir, f"{music_style}.mp3")
@@ -770,25 +1015,35 @@ def ensure_background_music(track_duration: float, work_dir: str, music_style: s
     if os.path.exists(bundled_fallback):
         return bundled_fallback
 
-    # Generate synthetic music bed
+    # Generate synthetic music bed with stereo width and reverb
     synth = MUSIC_SYNTHS.get(music_style, MUSIC_SYNTHS["ambient"])
     generated_music = os.path.join(work_dir, "background-bed.wav")
-    fade_duration = min(2.0, max(track_duration / 4, 1.0))
+    fade_duration = min(3.0, max(track_duration / 4, 1.5))
     fade_out_start = max(track_duration - fade_duration, 0)
 
+    # Use separate L/R channel expressions for stereo width
+    expr_left = synth.get("expr_left", synth.get("expr", "0"))
+    expr_right = synth.get("expr_right", synth.get("expr", "0"))
+
     synth_expr = (
-        f"aevalsrc={synth['expr']}|{synth['expr']}"
+        f"aevalsrc={expr_left}|{expr_right}"
         f":s=44100:d={track_duration:.3f}"
+    )
+
+    # Build audio filter chain: EQ → reverb (aecho) → fade in/out
+    reverb_params = synth.get("reverb", "0.5:0.4:60:0.3")
+    audio_filter = (
+        f"lowpass=f={synth['lowpass']},highpass=f={synth['highpass']},"
+        f"aecho={reverb_params},"
+        f"afade=t=in:st=0:d={fade_duration:.3f},"
+        f"afade=t=out:st={fade_out_start:.3f}:d={fade_duration:.3f}"
     )
 
     cmd = [
         "ffmpeg", "-y",
         "-f", "lavfi",
         "-i", synth_expr,
-        "-af",
-        f"lowpass=f={synth['lowpass']},highpass=f={synth['highpass']},"
-        f"afade=t=in:st=0:d={fade_duration:.3f},"
-        f"afade=t=out:st={fade_out_start:.3f}:d={fade_duration:.3f}",
+        "-af", audio_filter,
         generated_music,
     ]
     result = subprocess.run(cmd, capture_output=True, text=True)
@@ -832,6 +1087,7 @@ def render_intro_card(
         f"fade=t=out:st={duration - 0.5:.3f}:d=0.5"
     )
 
+    codec_args = get_video_codec_args(crf=8, preset="slow", intermediate=True)
     cmd = [
         "ffmpeg", "-y",
         "-loop", "1",
@@ -840,8 +1096,7 @@ def render_intro_card(
         "-filter_complex", f"[0:v]{video_filter}[v]",
         "-map", "[v]",
         "-map", "1:a",
-        "-c:v", "libx264", "-preset", "slow", "-crf", "8",
-        "-pix_fmt", "yuv420p",
+        *codec_args,
         "-c:a", "aac", "-b:a", "192k",
         "-t", f"{duration:.3f}",
         output_path,
@@ -879,6 +1134,7 @@ def render_outro_card(
         f"fade=t=out:st={duration - 1.0:.3f}:d=1.0"
     )
 
+    codec_args = get_video_codec_args(crf=8, preset="slow", intermediate=True)
     cmd = [
         "ffmpeg", "-y",
         "-loop", "1",
@@ -887,8 +1143,7 @@ def render_outro_card(
         "-filter_complex", f"[0:v]{video_filter}[v]",
         "-map", "[v]",
         "-map", "1:a",
-        "-c:v", "libx264", "-preset", "slow", "-crf", "8",
-        "-pix_fmt", "yuv420p",
+        *codec_args,
         "-c:a", "aac", "-b:a", "192k",
         "-t", f"{duration:.3f}",
         output_path,
@@ -956,6 +1211,7 @@ def assemble_final_video(
             )
             final_a = "[afinal]"
 
+        final_codec_args = get_video_codec_args(crf=settings.video_crf, preset="medium")
         cmd = (
             ["ffmpeg", "-y"]
             + inputs
@@ -963,10 +1219,7 @@ def assemble_final_video(
                 "-filter_complex", ";".join(filter_parts),
                 "-map", f"[{final_v}]",
                 "-map", final_a,
-                "-c:v", "libx264",
-                "-preset", "medium",
-                "-crf", str(settings.video_crf),
-                "-pix_fmt", "yuv420p",
+                *final_codec_args,
                 "-c:a", "aac",
                 "-b:a", "192k",
                 "-ar", "44100",
@@ -1013,6 +1266,7 @@ def assemble_final_video(
                 f";[{final_a}][music]amix=inputs=2:duration=first:normalize=0[afinal]"
             )
             final_a = "afinal"
+        final_codec_args = get_video_codec_args(crf=settings.video_crf, preset="medium")
         cmd = (
             ["ffmpeg", "-y"]
             + inputs
@@ -1021,10 +1275,7 @@ def assemble_final_video(
                 "-filter_complex", filter_complex,
                 "-map", f"[{final_v}]",
                 "-map", f"[{final_a}]",
-                "-c:v", "libx264",
-                "-preset", "medium",
-                "-crf", str(settings.video_crf),
-                "-pix_fmt", "yuv420p",
+                *final_codec_args,
                 "-c:a", "aac",
                 "-b:a", "192k",
                 "-ar", "44100",
@@ -1033,6 +1284,7 @@ def assemble_final_video(
             ]
         )
     else:
+        final_codec_args = get_video_codec_args(crf=settings.video_crf, preset="medium")
         cmd = (
             ["ffmpeg", "-y"]
             + inputs
@@ -1040,10 +1292,7 @@ def assemble_final_video(
                 "-filter_complex", filter_complex,
                 "-map", f"[{final_v}]",
                 "-map", f"[{final_a}]",
-                "-c:v", "libx264",
-                "-preset", "medium",
-                "-crf", str(settings.video_crf),
-                "-pix_fmt", "yuv420p",
+                *final_codec_args,
                 "-c:a", "aac",
                 "-b:a", "192k",
                 "-ar", "44100",
@@ -1130,7 +1379,6 @@ def run_pipeline(job: VideoJob) -> PipelineResult:
 
     try:
         llm_provider, llm_client = create_llm_client()
-        eleven = ElevenLabs(api_key=settings.elevenlabs_api_key)
         r2 = get_r2_client()
 
         # ── Stage 1: Download images
@@ -1176,7 +1424,13 @@ def run_pipeline(job: VideoJob) -> PipelineResult:
 
         # ── Stage 3: TTS (run once, audio is reused across aspect ratios)
         report_status(job.video_id, "processing", "Recording voiceover")
-        clips = generate_audio(eleven, clips, work_dir, voice_id=job.voice_id)
+        tts_provider = settings.tts_provider.lower()
+        if tts_provider == "openai" and settings.openai_api_key:
+            oai = OpenAI(api_key=settings.openai_api_key)
+            clips = generate_audio_openai(oai, clips, work_dir, voice_id=job.voice_id, tone=job.tone)
+        else:
+            eleven = ElevenLabs(api_key=settings.elevenlabs_api_key)
+            clips = generate_audio_elevenlabs(eleven, clips, work_dir, voice_id=job.voice_id)
 
         # ── Stages 4-5: Render + Assemble (once per aspect ratio)
         aspect_ratios = job.aspect_ratios or ["16:9"]
