@@ -23,7 +23,7 @@ interface QueueVideoInput {
   imageKeys: string[];
   autoSort?: boolean;
   addMusic?: boolean;
-  videoQuality?: "ai" | "standard";
+  videoQuality?: "ai";
   editedClips?: { imageIndex: number; narration: string }[];
 }
 
@@ -121,7 +121,7 @@ export async function queueVideoGeneration(input: QueueVideoInput) {
     imageKeys: input.imageKeys,
     autoSort,
     addMusic,
-    videoQuality: input.videoQuality || "standard",
+    videoQuality: "ai",
     editedClips: input.editedClips,
   });
 }

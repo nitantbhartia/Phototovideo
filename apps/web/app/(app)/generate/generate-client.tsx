@@ -139,7 +139,7 @@ export function GenerateClient() {
   const [aspectRatios, setAspectRatios] = useState<string[]>(["16:9"]);
   const [autoSort, setAutoSort] = useState(true);
   const [addMusic, setAddMusic] = useState(true);
-  const [videoQuality, setVideoQuality] = useState<"standard" | "ai">("standard");
+  const videoQuality: "ai" = "ai";
   const [isUploading, setIsUploading] = useState(false);
   const [isPlanning, setIsPlanning] = useState(false);
   const [uploadError, setUploadError] = useState("");
@@ -945,38 +945,16 @@ export function GenerateClient() {
           <Sparkles className="h-4 w-4 text-gold" />
           Video Quality
         </h2>
-        <div className="grid grid-cols-2 gap-3">
-          <button
-            onClick={() => setVideoQuality("standard")}
-            className={`p-4 rounded-xl border-2 text-left transition-all ${
-              videoQuality === "standard"
-                ? "border-gold bg-gold/5"
-                : "border-border hover:border-gold/30"
-            }`}
-          >
-            <p className="text-sm font-semibold text-charcoal">Standard</p>
-            <p className="text-[11px] text-charcoal-600 mt-1">
-              Ken Burns pan & zoom effect. Fast rendering, included free.
-            </p>
-          </button>
-          <button
-            onClick={() => setVideoQuality("ai")}
-            className={`p-4 rounded-xl border-2 text-left transition-all ${
-              videoQuality === "ai"
-                ? "border-gold bg-gold/5"
-                : "border-border hover:border-gold/30"
-            }`}
-          >
-            <p className="text-sm font-semibold text-charcoal flex items-center gap-1.5">
-              AI Cinematic
-              <span className="text-[10px] font-medium bg-gold/20 text-gold-700 px-1.5 py-0.5 rounded-full">
-                PRO
-              </span>
-            </p>
-            <p className="text-[11px] text-charcoal-600 mt-1">
-              AI-generated motion — objects move naturally with cinematic camera work.
-            </p>
-          </button>
+        <div className="p-4 rounded-xl border-2 border-gold bg-gold/5">
+          <p className="text-sm font-semibold text-charcoal flex items-center gap-1.5">
+            AI Cinematic
+            <span className="text-[10px] font-medium bg-gold/20 text-gold-700 px-1.5 py-0.5 rounded-full">
+              PRO
+            </span>
+          </p>
+          <p className="text-[11px] text-charcoal-600 mt-1">
+            AI-generated motion only. Ken Burns rendering is disabled.
+          </p>
         </div>
       </section>
 

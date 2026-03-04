@@ -1152,60 +1152,47 @@ def render_all_clips(
     ar_label: str = "",
     r2_client=None,
 ) -> list[dict]:
-    """Render all clips — AI video gen with Ken Burns fallback."""
+    """Render all clips using AI video generation only."""
     n = len(clips)
-    use_ai = settings.video_gen_provider.lower() != "ken_burns" and r2_client is not None
-    workers = min(
-        settings.max_video_gen_workers if use_ai else settings.max_render_workers,
-        n,
-    )
-    method = f"AI ({settings.video_gen_provider})" if use_ai else "Ken Burns"
+    provider = settings.video_gen_provider.lower().strip()
+    if r2_client is None:
+        raise RuntimeError("R2 client is required for AI video generation")
+    if provider not in {"luma", "runway"}:
+        raise RuntimeError(
+            f"AI-only mode requires VIDEO_GEN_PROVIDER=luma or runway, got '{settings.video_gen_provider}'"
+        )
+    workers = min(settings.max_video_gen_workers, n)
+    method = f"AI ({provider})"
     logger.info(f"Rendering {n} video clips via {method} ({workers} parallel workers)...")
     completed_count = 0
 
     def _render_one(i: int, clip: dict) -> tuple[int, str]:
         clip_path = os.path.join(work_dir, f"clip_{i:03d}.mp4")
         room_label = clip.get("room_label", "other")
-        ai_success = False
-
-        # Try AI video generation first
-        if use_ai:
-            ai_raw_path = os.path.join(work_dir, f"ai_raw_{i:03d}.mp4")
-            ai_success = generate_ai_video_clip(
-                r2_client=r2_client,
-                image_path=clip["path"],
-                room_label=room_label,
-                video_id=video_id or "unknown",
-                clip_idx=i,
-                output_path=ai_raw_path,
-            )
-            if ai_success:
-                # Composite narration audio onto the AI-generated video
-                composite_audio_on_video(
-                    video_path=ai_raw_path,
-                    audio_path=clip["audio_path"],
-                    clip_duration=clip["clip_duration"],
-                    output_path=clip_path,
-                    width=width,
-                    height=height,
-                    fps=settings.video_fps,
-                )
-
-        # Fall back to Ken Burns if AI gen failed or not enabled
+        ai_raw_path = os.path.join(work_dir, f"ai_raw_{i:03d}.mp4")
+        ai_success = generate_ai_video_clip(
+            r2_client=r2_client,
+            image_path=clip["path"],
+            room_label=room_label,
+            video_id=video_id or "unknown",
+            clip_idx=i,
+            output_path=ai_raw_path,
+        )
         if not ai_success:
-            if use_ai:
-                logger.info(f"Clip {i}: AI gen failed, falling back to Ken Burns")
-            motion = motion_for_room(room_label, i)
-            render_clip(
-                image_path=clip["path"],
-                audio_path=clip["audio_path"],
-                clip_duration=clip["clip_duration"],
-                output_path=clip_path,
-                motion=motion,
-                width=width,
-                height=height,
-                fps=settings.video_fps,
+            raise RuntimeError(
+                f"AI video generation failed for clip {i + 1}/{n} using provider '{provider}'"
             )
+
+        # Composite narration audio onto the AI-generated video
+        composite_audio_on_video(
+            video_path=ai_raw_path,
+            audio_path=clip["audio_path"],
+            clip_duration=clip["clip_duration"],
+            output_path=clip_path,
+            width=width,
+            height=height,
+            fps=settings.video_fps,
+        )
 
         return i, clip_path
 
@@ -1869,16 +1856,20 @@ def run_pipeline(job: VideoJob) -> PipelineResult:
             clips = generate_audio_elevenlabs(eleven, clips, work_dir, voice_id=job.voice_id)
 
         # ── Stages 4-5: Render + Assemble (once per aspect ratio)
-        # Per-job video quality override: "ai" enables AI video gen if API keys are configured.
-        # "standard" forces Ken Burns regardless of server default.
-        if job.video_quality == "ai" and settings.video_gen_provider == "ken_burns":
-            # User requested AI but server default is ken_burns — check if any API key is available
+        # AI-only mode: no Ken Burns fallback.
+        if job.video_quality != "ai":
+            raise RuntimeError("Only videoQuality='ai' is supported")
+
+        provider = settings.video_gen_provider.lower().strip()
+        if provider not in {"luma", "runway"}:
             if settings.lumaai_api_key:
                 settings.video_gen_provider = "luma"
             elif settings.runway_api_key:
                 settings.video_gen_provider = "runway"
-        elif job.video_quality == "standard":
-            settings.video_gen_provider = "ken_burns"
+            else:
+                raise RuntimeError(
+                    "AI-only mode requires LUMAAI_API_KEY or RUNWAY_API_KEY"
+                )
 
         aspect_ratios = job.aspect_ratios or ["16:9"]
         r2_keys = {}  # aspect_ratio -> r2_key

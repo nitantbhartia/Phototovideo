@@ -17,8 +17,8 @@ const CreateVideoSchema = z.object({
   imageKeys: z.array(z.string()).min(1).max(20),
   autoSort: z.boolean().default(true),
   addMusic: z.boolean().default(true),
-  // Video quality: "ai" uses AI video generation (Luma/Runway), "standard" uses Ken Burns
-  videoQuality: z.enum(["ai", "standard"]).default("standard"),
+  // AI-only pipeline
+  videoQuality: z.literal("ai").default("ai"),
   // Edit-before-render: pre-defined clip order and narrations from review step
   editedClips: z.array(z.object({
     imageIndex: z.number(),

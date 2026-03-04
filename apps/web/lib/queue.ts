@@ -45,7 +45,7 @@ export interface VideoJob {
   imageKeys: string[];
   autoSort: boolean;
   addMusic: boolean;
-  videoQuality?: "ai" | "standard";
+  videoQuality?: "ai";
   editedClips?: { imageIndex: number; narration: string }[];
 }
 
