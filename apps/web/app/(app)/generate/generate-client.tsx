@@ -61,19 +61,18 @@ interface VideoStatusResponse {
 }
 
 const PIPELINE_STEPS: PipelineStep[] = [
-  { label: "Classifying & sorting rooms", status: "pending" },
-  { label: "Writing narrations", status: "pending" },
+  { label: "Analyzing photos & writing narrations", status: "pending" },
   { label: "Recording voiceover", status: "pending" },
   { label: "Rendering video clips", status: "pending" },
   { label: "Assembling final video", status: "pending" },
 ];
 
 const ESTIMATED_TIMES: Record<number, string> = {
-  0: "About 7 minutes remaining",
-  20: "About 6 minutes remaining",
-  40: "About 4 minutes remaining",
-  60: "About 2 minutes remaining",
-  80: "About 1 minute remaining",
+  0: "About 3 minutes remaining",
+  20: "About 2 minutes remaining",
+  40: "About 90 seconds remaining",
+  60: "About 1 minute remaining",
+  80: "About 30 seconds remaining",
   95: "Almost done...",
 };
 
@@ -106,22 +105,22 @@ const STATUS_STAGE_PATTERNS = [
     patterns: ["downloading", "classifying", "sorting"],
   },
   {
-    index: 1,
+    index: 0,
     progress: 44,
     patterns: ["narration", "narrations", "writing"],
   },
   {
-    index: 2,
+    index: 1,
     progress: 60,
     patterns: ["voiceover", "audio", "recording"],
   },
   {
-    index: 3,
+    index: 2,
     progress: 78,
     patterns: ["rendering", "render 16:9", "render 9:16", "render 1:1"],
   },
   {
-    index: 4,
+    index: 3,
     progress: 92,
     patterns: ["assembling", "uploading", "thumbnail", "video ready"],
   },
@@ -417,7 +416,6 @@ export function GenerateClient() {
           return;
         }
 
-        // Update progress based on status message
         if (data.status === "queued") {
           setPipelineSteps(PIPELINE_STEPS);
           currentProgress = Math.max(currentProgress, 25);
@@ -432,7 +430,23 @@ export function GenerateClient() {
                     i < stage.index ? "done" : i === stage.index ? "active" : "pending",
                 }))
               );
-              currentProgress = Math.max(currentProgress, stage.progress);
+
+              let nextProgress: number = stage.progress;
+              if (stage.index === 2) {
+                const clipMatch = normalizedStatus.match(/clip (\d+)\/(\d+)/);
+                if (clipMatch) {
+                  const completed = parseInt(clipMatch[1], 10);
+                  const total = parseInt(clipMatch[2], 10);
+                  if (Number.isFinite(completed) && Number.isFinite(total) && total > 0) {
+                    nextProgress = Math.max(
+                      nextProgress,
+                      78 + Math.round((completed / total) * 14)
+                    );
+                  }
+                }
+              }
+
+              currentProgress = Math.max(currentProgress, nextProgress);
               break;
             }
           }

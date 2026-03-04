@@ -320,7 +320,100 @@ def generate_multimodal_json(
 
 
 # ─────────────────────────────────────────────
-# Stage 1: Image Classification & Sort
+# Stages 1+2: Combined Classification & Narration
+# ─────────────────────────────────────────────
+
+def classify_and_narrate(
+    provider: str,
+    client,
+    image_paths: list[str],
+    address: str,
+    property_type: str,
+    tone: str,
+    auto_sort: bool = True,
+) -> list[dict]:
+    """
+    Single LLM call that classifies rooms AND writes narrations.
+    Halves API cost and latency vs two separate calls.
+    Returns ordered list: [{path, room_label, order_index, narration}]
+    """
+    n = len(image_paths)
+    action = "classifying, sorting, and narrating" if auto_sort else "classifying and narrating"
+    logger.info(f"{action.capitalize()} {n} images in a single LLM call...")
+
+    tone_desc = TONE_PROMPTS.get(tone, TONE_PROMPTS["Warm & Inviting"])
+
+    sort_instruction = (
+        "Sort the results so they appear in optimal video order: exterior first, then "
+        "interior rooms (living → dining → kitchen → bedrooms → bathrooms), then "
+        "outdoor/backyard last."
+        if auto_sort
+        else "Keep the results in the exact same order as the input images."
+    )
+
+    prompt = f"""You are creating a real estate listing video for {address} ({property_type}).
+Analyze these {n} photos and do TWO things for each:
+
+1. **Classify** the room/area shown. Use one of: exterior, entryway, foyer, living room, family room, dining room, kitchen, bedroom, master bedroom, bathroom, office, laundry, garage, backyard, outdoor, pool, other.
+
+2. **Write narration** for each scene as part of one continuous video walkthrough.
+
+Narration tone: {tone_desc}
+
+Narration rules:
+- Scene 1 MUST open with: "Welcome to [address]" then describe what you see
+- Last scene MUST close with a call to action like "Schedule your private showing today"
+- Each scene is 1-2 sentences (max 30 words per scene)
+- Use natural transitions: "Stepping inside...", "Just down the hall...", "Moving through to...", "Out back...", etc.
+- Be specific — mention materials, colors, finishes, architectural details you see
+- Never use generic filler like "beautiful home" or "stunning property"
+- Sound like one person walking through and describing the home
+
+{sort_instruction}
+
+Return a JSON array with exactly {n} objects:
+[{{"image_index": 1, "room_label": "exterior", "narration": "Welcome to {address}. ..."}}]
+
+Return ONLY the JSON array, no other text."""
+
+    results = generate_multimodal_json(
+        provider=provider,
+        client=client,
+        prompt=prompt,
+        image_paths=image_paths,
+        max_tokens=2048,
+    )
+
+    # Sort by room order
+    def room_sort_key(item):
+        label = item["room_label"].lower()
+        for i, room in enumerate(ROOM_ORDER):
+            if room in label or label in room:
+                return i
+        return len(ROOM_ORDER)
+
+    if auto_sort:
+        results.sort(key=room_sort_key)
+    else:
+        results.sort(key=lambda item: item["image_index"])
+
+    # Map back to file paths
+    clips = []
+    for item in results:
+        idx = item["image_index"] - 1
+        if 0 <= idx < len(image_paths):
+            clips.append({
+                "path": image_paths[idx],
+                "room_label": item["room_label"],
+                "order_index": len(clips),
+                "narration": item.get("narration", f"Welcome to this {item['room_label']}."),
+            })
+
+    return clips
+
+
+# ─────────────────────────────────────────────
+# Stage 1: Image Classification & Sort (standalone, used by plan-only flow)
 # ─────────────────────────────────────────────
 
 def classify_and_sort_images(
@@ -764,7 +857,10 @@ def render_clip(
         output_path,
     ]
 
-    result = subprocess.run(cmd, capture_output=True, text=True)
+    try:
+        result = subprocess.run(cmd, capture_output=True, text=True, timeout=120)
+    except subprocess.TimeoutExpired:
+        raise RuntimeError(f"ffmpeg clip render timed out after 120s for {output_path}")
     if result.returncode != 0:
         raise RuntimeError(f"ffmpeg clip render failed: {result.stderr[-500:]}")
 
@@ -800,11 +896,14 @@ def render_all_clips(
     work_dir: str,
     width: int = 1920,
     height: int = 1080,
+    video_id: str | None = None,
+    ar_label: str = "",
 ) -> list[dict]:
     """Render all clips in parallel with room-aware motion styles."""
     n = len(clips)
     workers = min(settings.max_render_workers, n)
     logger.info(f"Rendering {n} video clips ({workers} parallel workers)...")
+    completed_count = 0
 
     def _render_one(i: int, clip: dict) -> tuple[int, str]:
         clip_path = os.path.join(work_dir, f"clip_{i:03d}.mp4")
@@ -826,6 +925,13 @@ def render_all_clips(
         for future in as_completed(futures):
             i, clip_path = future.result()
             clips[i]["clip_path"] = clip_path
+            completed_count += 1
+            if video_id:
+                prefix = f"Rendering {ar_label} " if ar_label else "Rendering "
+                report_status(
+                    video_id, "processing",
+                    f"{prefix}clip {completed_count}/{n}",
+                )
 
     return clips
 
@@ -1086,7 +1192,7 @@ def ensure_background_music(track_duration: float, work_dir: str, music_style: s
         "-af", audio_filter,
         generated_music,
     ]
-    result = subprocess.run(cmd, capture_output=True, text=True)
+    result = subprocess.run(cmd, capture_output=True, text=True, timeout=60)
     if result.returncode != 0:
         logger.warning(f"Background music generation failed: {result.stderr[-500:]}")
         return None
@@ -1142,7 +1248,7 @@ def render_intro_card(
         output_path,
     ]
 
-    result = subprocess.run(cmd, capture_output=True, text=True)
+    result = subprocess.run(cmd, capture_output=True, text=True, timeout=60)
     if result.returncode != 0:
         logger.warning(f"Intro card render failed: {result.stderr[-500:]}")
         return False
@@ -1189,7 +1295,7 @@ def render_outro_card(
         output_path,
     ]
 
-    result = subprocess.run(cmd, capture_output=True, text=True)
+    result = subprocess.run(cmd, capture_output=True, text=True, timeout=60)
     if result.returncode != 0:
         logger.warning(f"Outro card render failed: {result.stderr[-500:]}")
         return False
@@ -1268,7 +1374,10 @@ def assemble_final_video(
             ]
         )
 
-        result = subprocess.run(cmd, capture_output=True, text=True)
+        try:
+            result = subprocess.run(cmd, capture_output=True, text=True, timeout=300)
+        except subprocess.TimeoutExpired:
+            raise RuntimeError("ffmpeg assembly timed out after 300s")
         if result.returncode != 0:
             raise RuntimeError(f"ffmpeg assembly failed: {result.stderr[-1000:]}")
         return
@@ -1341,7 +1450,10 @@ def assemble_final_video(
             ]
         )
 
-    result = subprocess.run(cmd, capture_output=True, text=True)
+    try:
+        result = subprocess.run(cmd, capture_output=True, text=True, timeout=300)
+    except subprocess.TimeoutExpired:
+        raise RuntimeError("ffmpeg assembly timed out after 300s")
     if result.returncode != 0:
         raise RuntimeError(f"ffmpeg assembly failed: {result.stderr[-1000:]}")
 
@@ -1386,14 +1498,10 @@ def run_plan_only(job: VideoJob) -> dict:
         if not image_paths:
             return {"error": "No images could be downloaded", "clips": []}
 
-        # Stage 1: Classify and sort
-        clips = classify_and_sort_images(
-            llm_provider, llm_client, image_paths, job.address, job.property_type, job.auto_sort
-        )
-
-        # Stage 2: Generate narrations
-        clips = generate_narrations(
-            llm_provider, llm_client, clips, job.address, job.property_type, job.tone
+        # Stages 1+2: Classify and narrate in a single LLM call
+        clips = classify_and_narrate(
+            llm_provider, llm_client, image_paths,
+            job.address, job.property_type, job.tone, job.auto_sort,
         )
 
         # Return the plan for user review
@@ -1441,7 +1549,7 @@ def run_pipeline(job: VideoJob) -> PipelineResult:
         if not image_paths:
             raise RuntimeError("No images could be downloaded")
 
-        # ── Stages 1-2: Classification + Narration (run once, shared across all aspect ratios)
+        # ── Stages 1-2: Classification + Narration (single LLM call, shared across all aspect ratios)
         if job.edited_clips:
             logger.info("Using user-edited clip plan (skipping AI classification + narration)")
             clips = []
@@ -1455,17 +1563,10 @@ def run_pipeline(job: VideoJob) -> PipelineResult:
                         "narration": ec["narration"],
                     })
         else:
-            stage_message = (
-                "Classifying & sorting rooms" if job.auto_sort else "Classifying rooms"
-            )
-            report_status(job.video_id, "processing", stage_message)
-            clips = classify_and_sort_images(
-                llm_provider, llm_client, image_paths, job.address, job.property_type, job.auto_sort
-            )
-
-            report_status(job.video_id, "processing", "Writing narrations")
-            clips = generate_narrations(
-                llm_provider, llm_client, clips, job.address, job.property_type, job.tone
+            report_status(job.video_id, "processing", "Analyzing photos & writing narrations")
+            clips = classify_and_narrate(
+                llm_provider, llm_client, image_paths,
+                job.address, job.property_type, job.tone, job.auto_sort,
             )
 
         # ── Stage 3: TTS (run once, audio is reused across aspect ratios)
@@ -1485,7 +1586,8 @@ def run_pipeline(job: VideoJob) -> PipelineResult:
         primary_duration = None
         gif_r2_key = None
 
-        for ar_idx, ar_name in enumerate(aspect_ratios):
+        def _render_aspect_ratio(ar_idx: int, ar_name: str) -> tuple[str, str, str]:
+            """Render one aspect ratio: clips + intro/outro in parallel, then assemble."""
             ar = ASPECT_RATIOS.get(ar_name, ASPECT_RATIOS["16:9"])
             vid_width = ar["width"]
             vid_height = ar["height"]
@@ -1495,35 +1597,37 @@ def run_pipeline(job: VideoJob) -> PipelineResult:
             ar_dir = os.path.join(work_dir, f"ar_{ar_suffix}")
             os.makedirs(ar_dir, exist_ok=True)
 
-            label = f"Rendering {ar_name}"
-            if len(aspect_ratios) > 1:
-                label = f"Rendering {ar_name} ({ar_idx + 1}/{len(aspect_ratios)})"
-            report_status(job.video_id, "processing", label)
-
-            # Stage 4: Render clips for this aspect ratio
-            ar_clips = render_all_clips(clips, ar_dir, width=vid_width, height=vid_height)
-
-            # Intro card
+            # Render clips, intro, and outro in parallel — they're independent
             intro_path = os.path.join(ar_dir, "intro_card.mp4")
-            has_intro = render_intro_card(
-                first_image=clips[0]["path"],
-                address=job.address,
-                property_type=job.property_type,
-                output_path=intro_path,
-                width=vid_width,
-                height=vid_height,
-                fps=settings.video_fps,
-            )
-
-            # Outro card
             outro_path = os.path.join(ar_dir, "outro_card.mp4")
-            has_outro = render_outro_card(
-                last_image=clips[-1]["path"],
-                output_path=outro_path,
-                width=vid_width,
-                height=vid_height,
-                fps=settings.video_fps,
-            )
+
+            with ThreadPoolExecutor(max_workers=3) as card_pool:
+                clips_future = card_pool.submit(
+                    render_all_clips, clips, ar_dir, vid_width, vid_height,
+                    video_id=job.video_id, ar_label=ar_name,
+                )
+                intro_future = card_pool.submit(
+                    render_intro_card,
+                    first_image=clips[0]["path"],
+                    address=job.address,
+                    property_type=job.property_type,
+                    output_path=intro_path,
+                    width=vid_width,
+                    height=vid_height,
+                    fps=settings.video_fps,
+                )
+                outro_future = card_pool.submit(
+                    render_outro_card,
+                    last_image=clips[-1]["path"],
+                    output_path=outro_path,
+                    width=vid_width,
+                    height=vid_height,
+                    fps=settings.video_fps,
+                )
+
+                ar_clips = clips_future.result()
+                has_intro = intro_future.result()
+                has_outro = outro_future.result()
 
             # Build full clip list
             all_clips = []
@@ -1546,11 +1650,11 @@ def run_pipeline(job: VideoJob) -> PipelineResult:
                 })
 
             # Stage 5: Assemble
-            output_path = os.path.join(ar_dir, "output.mp4")
+            ar_output = os.path.join(ar_dir, "output.mp4")
             assemble_final_video(
                 clips=all_clips,
                 work_dir=ar_dir,
-                output_path=output_path,
+                output_path=ar_output,
                 add_music=job.add_music,
                 watermark=True,
                 music_style=job.music_style,
@@ -1559,8 +1663,7 @@ def run_pipeline(job: VideoJob) -> PipelineResult:
                 subtitle_margin_v=subtitle_mv,
             )
 
-            # Upload to R2
-            # First aspect ratio → output.mp4 (primary), others → output_9x16.mp4 etc.
+            # Determine R2 key
             if ar_idx == 0:
                 r2_key = f"videos/{job.user_id}/{job.video_id}/output.mp4"
             else:
@@ -1568,32 +1671,57 @@ def run_pipeline(job: VideoJob) -> PipelineResult:
 
             logger.info(f"Uploading {ar_name} output to R2: {r2_key}")
             r2.upload_file(
-                output_path,
+                ar_output,
                 settings.r2_bucket_name,
                 r2_key,
                 ExtraArgs={"ContentType": "video/mp4"},
             )
-            r2_keys[ar_name] = r2_key
+            return ar_name, r2_key, ar_output
 
-            # Track primary output (first aspect ratio)
-            if ar_idx == 0:
-                primary_output = output_path
-                primary_duration = get_video_duration(output_path)
+        # Render all aspect ratios — parallel when multiple, sequential when one
+        if len(aspect_ratios) == 1:
+            report_status(job.video_id, "processing", f"Rendering {aspect_ratios[0]}")
+            ar_name, r2_key, ar_output = _render_aspect_ratio(0, aspect_ratios[0])
+            r2_keys[ar_name] = r2_key
+            primary_output = ar_output
+            primary_duration = get_video_duration(ar_output)
+        else:
+            report_status(
+                job.video_id, "processing",
+                f"Rendering {len(aspect_ratios)} aspect ratios in parallel",
+            )
+            with ThreadPoolExecutor(max_workers=len(aspect_ratios)) as ar_pool:
+                ar_futures = {
+                    ar_pool.submit(_render_aspect_ratio, i, name): (i, name)
+                    for i, name in enumerate(aspect_ratios)
+                }
+                for future in as_completed(ar_futures):
+                    i, name = ar_futures[future]
+                    ar_name, r2_key, ar_output = future.result()
+                    r2_keys[ar_name] = r2_key
+                    if i == 0:
+                        primary_output = ar_output
+                        primary_duration = get_video_duration(ar_output)
 
         # Use primary output for result and thumbnail
         result.output_r2_key = r2_keys.get(aspect_ratios[0])
         result.duration_seconds = primary_duration
 
-        # Generate thumbnail GIF from primary output
+        # Generate thumbnail GIF from the first source image (Ken Burns effect).
+        # Much faster than re-decoding the full assembled video.
         try:
             gif_path = os.path.join(work_dir, "thumbnail.gif")
             gif_result = subprocess.run(
                 [
                     "ffmpeg", "-y",
+                    "-loop", "1",
+                    "-i", clips[0]["path"],
                     "-t", "3",
-                    "-i", primary_output,
                     "-filter_complex",
-                    "fps=10,scale=640:-1:flags=lanczos,split[v1][v2];[v1]palettegen[p];[v2][p]paletteuse",
+                    "scale=640:-1:force_original_aspect_ratio=decrease:flags=lanczos,"
+                    "zoompan=z='1+0.04*on/72':x='(iw-iw/zoom)/2':y='(ih-ih/zoom)/2'"
+                    ":d=30:s=640x360:fps=10,"
+                    "split[v1][v2];[v1]palettegen[p];[v2][p]paletteuse",
                     gif_path,
                 ],
                 capture_output=True,

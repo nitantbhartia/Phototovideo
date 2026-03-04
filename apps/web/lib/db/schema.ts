@@ -77,6 +77,12 @@ export const videos = pgTable(
     userIdIdx: index("videos_user_id_idx").on(table.userId),
     shareIdIdx: index("videos_share_id_idx").on(table.shareId),
     statusIdx: index("videos_status_idx").on(table.status),
+    createdAtIdx: index("videos_created_at_idx").on(table.createdAt),
+    userStatusCreatedIdx: index("videos_user_status_created_idx").on(
+      table.userId,
+      table.status,
+      table.createdAt,
+    ),
   })
 );
 
@@ -117,6 +123,7 @@ export const transactions = pgTable(
   },
   (table) => ({
     userIdIdx: index("transactions_user_id_idx").on(table.userId),
+    createdAtIdx: index("transactions_created_at_idx").on(table.createdAt),
   })
 );
 
