@@ -26,12 +26,12 @@ class Settings(BaseSettings):
     video_fps: int = 24
     video_crf: int = 20
     clip_min_duration: float = 4.0
-    clip_max_duration: float = 10.0
+    clip_max_duration: float = 12.0
     xfade_duration: float = 0.45
-    narration_lead_in: float = 0.35
-    narration_lead_out: float = 0.85
-    subtitle_font_size: int = 18
-    subtitle_margin_v: int = 80
+    narration_lead_in: float = 0.5
+    narration_lead_out: float = 1.3
+    subtitle_font_size: int = 22
+    subtitle_margin_v: int = 60
     background_music_volume: float = 0.14
 
     class Config:
